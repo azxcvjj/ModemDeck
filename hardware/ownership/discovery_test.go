@@ -77,3 +77,91 @@ func TestScannerDiscoversPortsBelowStablePhysicalDevice(t *testing.T) {
 		t.Fatalf("ports = %+v", device.Ports)
 	}
 }
+
+func TestSysfsBackendRequiresExplicitOptIn(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	devRoot := filepath.Join(root, "dev")
+	missing := filepath.Join(root, "missing-udev")
+	for _, p := range []string{sysRoot, devRoot} {
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := newSysfsScanner(sysRoot, devRoot, missing); err == nil {
+		t.Fatal("udev must fail closed")
+	}
+	if _, err := newSysfsScannerWithBackend(sysRoot, devRoot, missing, "sysfs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSysfsScannerWithBackend(sysRoot, devRoot, missing, "auto"); err == nil {
+		t.Fatal("unknown backend accepted")
+	}
+}
+
+func TestSysfsReadinessChecksLiveKernelIdentity(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	devRoot := filepath.Join(root, "dev")
+	physical := filepath.Join(sysRoot, "devices", "usb1", "1-2", "net", "wwan0")
+	for _, p := range []string{physical, filepath.Join(sysRoot, "class", "net"), devRoot} {
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(physical, filepath.Join(sysRoot, "class", "net", "wwan0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(physical, "ifindex"), []byte("9\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := newSysfsScannerWithBackend(sysRoot, devRoot, "/absent", "sysfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := kernelPort{Subsystem: "net", Name: "wwan0", UDevKey: "n9"}
+	if err := scanner.checkPortReady(port); err != nil {
+		t.Fatal(err)
+	}
+	port.UDevKey = "n10"
+	if err := scanner.checkPortReady(port); err == nil {
+		t.Fatal("stale kernel identity accepted")
+	}
+	port.UDevKey = "n9"
+	port.DevNode = filepath.Join(devRoot, "fake")
+	if err := os.WriteFile(port.DevNode, []byte("not a device"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.checkPortReady(port); err == nil {
+		t.Fatal("regular file accepted as device")
+	}
+}
+
+func TestSysfsReadinessRejectsMismatchedCharacterDevice(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	devRoot := filepath.Join(root, "dev")
+	physical := filepath.Join(sysRoot, "devices", "usb1", "1-2", "ttyUSB0")
+	for _, p := range []string{physical, filepath.Join(sysRoot, "class", "tty"), devRoot} {
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(physical, filepath.Join(sysRoot, "class", "tty", "ttyUSB0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(physical, "dev"), []byte("188:0"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	node := filepath.Join(devRoot, "ttyUSB0")
+	if err := os.Symlink("/dev/null", node); err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := newSysfsScannerWithBackend(sysRoot, devRoot, "/absent", "sysfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.checkPortReady(kernelPort{Subsystem: "tty", Name: "ttyUSB0", UDevKey: "c188:0", DevNode: node}); err == nil {
+		t.Fatal("wrong character device accepted")
+	}
+}

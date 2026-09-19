@@ -1,0 +1,23 @@
+# OpenWrt variant: ModemManager's real sysfs backend, no synthetic udev records.
+ARG BASE_IMAGE=ghcr.io/human-agent65535/modemdeck-hardware@sha256:104ef206c3a3ee95baea0f7be8608689a4f19348e33d4bda8ff56124e519f94d
+FROM golang:1.26.5-trixie@sha256:4ee9ffa999b4583ce281939cdff828763083610292f252279a0cee77473bd9a7 AS owner-builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+WORKDIR /src
+COPY hardware/ownership/ ./
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o /out/modemdeck-device-owner .
+
+FROM ${BASE_IMAGE} AS mm-builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG MODEMMANAGER_DEBIAN_VERSION=1.24.0-1+deb13u1
+USER root
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends dpkg-dev && apt-get build-dep -y "modemmanager=${MODEMMANAGER_DEBIAN_VERSION}"
+WORKDIR /source
+RUN apt-get source "modemmanager=${MODEMMANAGER_DEBIAN_VERSION}" && source_dir="$(find /source -mindepth 1 -maxdepth 1 -type d -name 'modemmanager-*' -print -quit)" && meson setup /build "$source_dir" --prefix=/usr --libdir="lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" --buildtype=release -Dudev=false -Dudevdir=/usr/lib/udev -Dat_command_via_dbus=true -Dpolkit=no -Dsystemd_suspend_resume=false -Dsystemd_journal=false -Dtests=false -Dman=false -Dgtk_doc=false -Dvapi=false -Dintrospection=false && meson compile -C /build -j 2 && DESTDIR=/out meson install -C /build
+FROM ${BASE_IMAGE}
+COPY --from=mm-builder /out/usr/ /usr/
+COPY --from=owner-builder /out/modemdeck-device-owner /usr/local/bin/modemdeck-device-owner
+COPY hardware/bin/modemdeck-hardware-entrypoint /usr/local/bin/modemdeck-hardware-entrypoint
+RUN chmod 755 /usr/local/bin/modemdeck-device-owner /usr/local/bin/modemdeck-hardware-entrypoint && sed -i 's/udev=true/udev=false/' /usr/share/modemdeck/modemmanager-build-options
+ENV MODEMDECK_HARDWARE_MODE=advanced MODEMDECK_DISCOVERY_BACKEND=sysfs

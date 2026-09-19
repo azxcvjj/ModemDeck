@@ -1,0 +1,93 @@
+# Standalone opt-in OpenWrt trial; does not modify host services.
+name: modemdeck-openwrt
+services:
+  hardware:
+    image: local/modemdeck-hardware:openwrt
+    container_name: modemdeck-hardware-trial
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [SYS_PTRACE, CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    environment:
+      MODEMDECK_HARDWARE_MODE: advanced
+      MODEMDECK_DISCOVERY_BACKEND: sysfs
+      MODEMDECK_QDC507_USB_PROVISIONING: "false"
+      MODEMDECK_DEVICE_ASSIGNMENTS_FILE: /etc/modemdeck/device-assignments.json
+    command: ["--mode", "advanced", "--assignments", "/etc/modemdeck/device-assignments.json"]
+    devices:
+      - ${MODEMDECK_TTY0:-/dev/ttyUSB0}:/dev/ttyUSB0
+      - ${MODEMDECK_TTY1:-/dev/ttyUSB1}:/dev/ttyUSB1
+      - ${MODEMDECK_AT:-/dev/ttyUSB2}:/dev/ttyUSB2
+      - ${MODEMDECK_MODEM:-/dev/ttyUSB3}:/dev/ttyUSB3
+      - ${MODEMDECK_QMI:-/dev/cdc-wdm0}:/dev/cdc-wdm0
+    volumes:
+      - /sys:/sys:ro
+      - /proc:/run/host-proc:ro
+      - /run/dbus:/run/host-dbus:ro
+      - ${MODEMDECK_TRIAL_DIR:?Set MODEMDECK_TRIAL_DIR}/assignments.json:/etc/modemdeck/device-assignments.json:ro
+      - ${MODEMDECK_TRIAL_DIR}/media.json:/etc/modemdeck/media-bindings.json:ro
+      - agent-runtime:/run/modemdeck
+      - hardware-state:/var/lib/ModemManager
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=32m
+      - /run/dbus:rw,nosuid,nodev,size=4m
+      - /tmp:rw,nosuid,nodev,size=32m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/modemdeck-hardware-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+  api:
+    image: ghcr.io/human-agent65535/modemdeck@sha256:2e7a6c3950be819f7f4e6ff93e03e0e04520ec5f900c28549a7a5eacee2731eb
+    container_name: modemdeck-api-trial
+    user: "10001:10001"
+    group_add: ["10002"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      hardware:
+        condition: service_healthy
+    environment:
+      MODEMDECK_LISTEN_ADDRESS: 0.0.0.0:8080
+      MODEMDECK_DATABASE_PATH: /var/lib/modemdeck/modemdeck.db
+      MODEMDECK_AGENT_SOCKET: /run/modemdeck/agent.sock
+      MODEMDECK_TLS_DIRECTORY: /var/lib/modemdeck/tls
+      MODEMDECK_TLS_HOSTS: ${MODEMDECK_TLS_HOSTS:-localhost,127.0.0.1}
+      MODEMDECK_SETTINGS_KEY_FILE: /run/secrets/modemdeck_settings_key
+      MODEMDECK_SECURE_COOKIES: "true"
+    volumes:
+      - ${MODEMDECK_TRIAL_DIR}/data:/var/lib/modemdeck
+      - agent-runtime:/run/modemdeck:ro
+    secrets: [modemdeck_settings_key]
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://127.0.0.1:8080/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  modemdeck:
+    image: ghcr.io/human-agent65535/modemdeck-web@sha256:15a4f13407343da9b7e24fbc97b847da4df37ef9939bf45773bc4729c1497df3
+    container_name: modemdeck-web-trial
+    user: "101:101"
+    group_add: ["10001"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${MODEMDECK_BIND_ADDRESS:-127.0.0.1}:${MODEMDECK_PORT:-7577}:7577/tcp"
+    environment:
+      MODEMDECK_WEB_TLS_DIRECTORY: /var/lib/modemdeck/tls
+      MODEMDECK_WEB_HTTPS_PORT: ${MODEMDECK_PORT:-7577}
+    volumes:
+      - ${MODEMDECK_TRIAL_DIR}/data/tls:/var/lib/modemdeck/tls:ro
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=32m"]
+secrets:
+  modemdeck_settings_key:
+    file: ${MODEMDECK_TRIAL_DIR}/settings-key
+volumes:
+  agent-runtime:
+  hardware-state:

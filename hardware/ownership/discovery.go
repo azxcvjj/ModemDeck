@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -20,14 +22,23 @@ type sysfsScanner struct {
 	sysfsRoot    string
 	devRoot      string
 	udevDataRoot string
+	backend      string
 }
 
 func newSysfsScanner(sysfsRoot string, devRoot string, udevDataRoot string) (*sysfsScanner, error) {
-	for name, path := range map[string]string{
-		"sysfs root":     sysfsRoot,
-		"device root":    devRoot,
-		"udev data root": udevDataRoot,
-	} {
+	return newSysfsScannerWithBackend(sysfsRoot, devRoot, udevDataRoot, "udev")
+}
+
+// Sysfs is an explicit opt-in for hosts without udev, never a silent fallback.
+func newSysfsScannerWithBackend(sysfsRoot, devRoot, udevDataRoot, backend string) (*sysfsScanner, error) {
+	if backend != "udev" && backend != "sysfs" {
+		return nil, fmt.Errorf("invalid discovery backend %q", backend)
+	}
+	roots := map[string]string{"sysfs root": sysfsRoot, "device root": devRoot}
+	if backend == "udev" {
+		roots["udev data root"] = udevDataRoot
+	}
+	for name, path := range roots {
 		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("%s must be absolute", name)
 		}
@@ -41,6 +52,7 @@ func newSysfsScanner(sysfsRoot string, devRoot string, udevDataRoot string) (*sy
 		sysfsRoot:    filepath.Clean(sysfsRoot),
 		devRoot:      filepath.Clean(devRoot),
 		udevDataRoot: filepath.Clean(udevDataRoot),
+		backend:      backend,
 	}, nil
 }
 
@@ -192,11 +204,25 @@ func (scanner *sysfsScanner) checkPortReady(port kernelPort) error {
 	if port.UDevKey == "" {
 		return fmt.Errorf("%s/%s has no kernel device identifier for the host udev database", port.Subsystem, port.Name)
 	}
-	udevRecord := filepath.Join(scanner.udevDataRoot, port.UDevKey)
-	if info, err := os.Stat(udevRecord); err != nil {
-		return fmt.Errorf("host udev record %s is unavailable: %w", udevRecord, err)
-	} else if info.IsDir() {
-		return fmt.Errorf("host udev record %s is not a file", udevRecord)
+	if scanner.backend == "udev" {
+		udevRecord := filepath.Join(scanner.udevDataRoot, port.UDevKey)
+		if info, err := os.Stat(udevRecord); err != nil {
+			return fmt.Errorf("host udev record %s is unavailable: %w", udevRecord, err)
+		} else if info.IsDir() {
+			return fmt.Errorf("host udev record %s is not a file", udevRecord)
+		}
+
+	} else {
+		// Re-read kernel identity, never synthesize udev records. Detect a stale
+		// class entry before allowing access to a recycled character device.
+		classPath := filepath.Join(scanner.sysfsRoot, "class", port.Subsystem, port.Name)
+		actual, err := filepath.EvalSymlinks(classPath)
+		if err != nil || !pathWithin(actual, filepath.Join(scanner.sysfsRoot, "devices")) {
+			return fmt.Errorf("invalid sysfs port %s/%s", port.Subsystem, port.Name)
+		}
+		if udevDatabaseKey(classPath, port.Subsystem) != port.UDevKey {
+			return fmt.Errorf("kernel identity changed for %s/%s", port.Subsystem, port.Name)
+		}
 	}
 
 	if port.DevNode == "" {
@@ -210,6 +236,16 @@ func (scanner *sysfsScanner) checkPortReady(port kernelPort) error {
 		return fmt.Errorf("device node %s is not a character device", port.DevNode)
 	}
 
+	if scanner.backend == "sysfs" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("cannot inspect device identity for %s", port.DevNode)
+		}
+		identity := fmt.Sprintf("c%d:%d", unix.Major(uint64(stat.Rdev)), unix.Minor(uint64(stat.Rdev)))
+		if identity != port.UDevKey {
+			return fmt.Errorf("device identity mismatch for %s: %s != %s", port.DevNode, identity, port.UDevKey)
+		}
+	}
 	if err := syscall.Access(port.DevNode, posixReadAccess|posixWriteAccess); err != nil {
 		return fmt.Errorf("device node %s is not readable and writable by the private hardware runtime: %w", port.DevNode, err)
 	}

@@ -227,7 +227,7 @@ func (coordinator *coordinator) reconcile(
 				continue
 			}
 			if now.Sub(pending.FirstSeen) < coordinator.cfg.settleDuration {
-				status.Detail = "waiting for stable sysfs and host udev state"
+				status.Detail = "waiting for stable kernel port readiness"
 				startupComplete = false
 				continue
 			}

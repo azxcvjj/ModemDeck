@@ -54,6 +54,7 @@ func runOwner(arguments []string) error {
 	)
 	sysfsRoot := flags.String("sysfs-root", "/sys", "sysfs mount root")
 	devRoot := flags.String("dev-root", "/dev", "device node root")
+	backend := flags.String("discovery-backend", "udev", "port readiness backend: udev or sysfs (OpenWrt)")
 	udevDataRoot := flags.String("udev-data-root", "/run/udev/data", "host udev database root")
 	startupTimeoutSeconds := flags.Int("startup-timeout-seconds", 20, "required assignment startup timeout")
 	if err := flags.Parse(arguments); err != nil {
@@ -76,7 +77,7 @@ func runOwner(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	scanner, err := newSysfsScanner(*sysfsRoot, *devRoot, *udevDataRoot)
+	scanner, err := newSysfsScannerWithBackend(*sysfsRoot, *devRoot, *udevDataRoot, *backend)
 	if err != nil {
 		return err
 	}
@@ -132,6 +133,7 @@ func printInventory(arguments []string) error {
 	flags := flag.NewFlagSet("inventory", flag.ContinueOnError)
 	sysfsRoot := flags.String("sysfs-root", "/sys", "sysfs mount root")
 	devRoot := flags.String("dev-root", "/dev", "device node root")
+	backend := flags.String("discovery-backend", "udev", "port readiness backend: udev or sysfs (OpenWrt)")
 	udevDataRoot := flags.String("udev-data-root", "/run/udev/data", "host udev database root")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -139,7 +141,7 @@ func printInventory(arguments []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected inventory arguments: %v", flags.Args())
 	}
-	scanner, err := newSysfsScanner(*sysfsRoot, *devRoot, *udevDataRoot)
+	scanner, err := newSysfsScannerWithBackend(*sysfsRoot, *devRoot, *udevDataRoot, *backend)
 	if err != nil {
 		return err
 	}

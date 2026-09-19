@@ -6,6 +6,8 @@ readonly program="${0##*/}"
 mode="${MODEMDECK_HARDWARE_MODE:-simple}"
 assignments_file="${MODEMDECK_DEVICE_ASSIGNMENTS_FILE:-}"
 shutdown_timeout="${MODEMDECK_SHUTDOWN_TIMEOUT_SECONDS:-10}"
+discovery_backend="${MODEMDECK_DISCOVERY_BACKEND:-udev}"
+case "${discovery_backend}" in udev|sysfs) ;; *) echo "invalid discovery backend" >&2; exit 1;; esac
 
 usage() {
   cat <<'EOF'
@@ -104,6 +106,10 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+
+if [[ "${discovery_backend}" == sysfs && "${mode}" != advanced ]]; then
+  echo "sysfs discovery requires advanced mode" >&2; exit 1
+fi
 
 case "${mode}" in
   simple|advanced) ;;
@@ -339,6 +345,7 @@ if [[ "${mode}" == "advanced" ]]; then
   start_core \
     "advanced device owner" \
     "${device_owner}" run \
+    --discovery-backend "${discovery_backend}" \
     --config "${assignments_file}" \
     --status-file "${owner_status}" \
     --startup-timeout-seconds "${startup_timeout}"

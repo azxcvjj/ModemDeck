@@ -1,0 +1,5 @@
+
+# Hardware entrypoints must remain executable by Linux interpreters.
+hardware/bin/* text eol=lf
+hardware/tests/*.sh text eol=lf
+hardware/*.sh text eol=lf
