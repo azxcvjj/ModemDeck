@@ -147,6 +147,23 @@ func (m *Manager) Ensure(ctx context.Context, line domain.Line) (changed bool, e
 		return false, fmt.Errorf("inspect QDC507 USB interfaces: %w", err)
 	}
 	if interfaces.voiceReady() {
+		// A persisted voice USB composition does not guarantee that the
+		// firmware-side adbd daemon is running after a modem boot. Refresh it
+		// through the same inhibited direct-serial path without rewriting USB
+		// configuration or rebooting the modem.
+		port, portErr := m.devices.ATPort(line)
+		if portErr != nil {
+			return false, fmt.Errorf("resolve QDC507 AT port: %w", portErr)
+		}
+		release, inhibitErr := m.inhibitor.Inhibit(ctx, physicalDevice)
+		if inhibitErr != nil {
+			return false, fmt.Errorf("inhibit QDC507 in ModemManager: %w", inhibitErr)
+		}
+		defer func() { _ = release(context.Background()) }()
+		response, adbErr := m.at.Command(ctx, port.Device, `AT+QLINUXCMD="adbd"`, 8*time.Second)
+		if adbErr != nil || !atResponseSucceeded(response) {
+			return false, fmt.Errorf("QDC507 failed to start adbd")
+		}
 		return false, nil
 	}
 	port, err := m.devices.ATPort(line)
