@@ -18,6 +18,7 @@ RUN apt-get source "modemmanager=${MODEMMANAGER_DEBIAN_VERSION}" && source_dir="
 FROM ${BASE_IMAGE}
 COPY --from=mm-builder /out/usr/ /usr/
 COPY --from=owner-builder /out/modemdeck-device-owner /usr/local/bin/modemdeck-device-owner
+COPY modemdeck-agent-openwrt /usr/local/bin/modemdeck-agent
 COPY hardware/bin/modemdeck-hardware-entrypoint /usr/local/bin/modemdeck-hardware-entrypoint
-RUN chmod 755 /usr/local/bin/modemdeck-device-owner /usr/local/bin/modemdeck-hardware-entrypoint && sed -i 's/udev=true/udev=false/' /usr/share/modemdeck/modemmanager-build-options
+RUN chmod 755 /usr/local/bin/modemdeck-agent /usr/local/bin/modemdeck-device-owner /usr/local/bin/modemdeck-hardware-entrypoint && sed -i 's/udev=true/udev=false/' /usr/share/modemdeck/modemmanager-build-options
 ENV MODEMDECK_HARDWARE_MODE=advanced MODEMDECK_DISCOVERY_BACKEND=sysfs

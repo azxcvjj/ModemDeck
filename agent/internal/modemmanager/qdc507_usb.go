@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/human-agent65535/modemdeck/agent/internal/domain"
 )
@@ -21,13 +22,36 @@ func (i qdc507DeviceInhibitor) Inhibit(
 	if i.provider == nil {
 		return nil, domain.Unavailable(operation, "ModemManager provider is unavailable", nil)
 	}
+	// Advanced OpenWrt ownership reports the physical sysfs path, while
+	// ModemManager's custom ReportKernelEvent UID is the stable "Device"
+	// property (for example modemdeck:dji-test). Resolve that UID before
+	// calling InhibitDevice; standard udev deployments keep the original path.
+	inhibitUID := uid
+	if strings.HasPrefix(uid, "/sys/") {
+		if objects, err := i.provider.managedObjects(ctx, operation); err == nil {
+			for _, interfaces := range objects {
+				props, ok := interfaces[modemInterface]
+				if !ok {
+					continue
+				}
+				physical, _ := stringProperty(props, "Physdev")
+				if normalizePhysicalDevice(physical) != normalizePhysicalDevice(uid) {
+					continue
+				}
+				if device, ok := stringProperty(props, "Device"); ok && strings.TrimSpace(device) != "" {
+					inhibitUID = strings.TrimSpace(device)
+				}
+				break
+			}
+		}
+	}
 	if _, err := i.provider.call(
 		ctx,
 		managerPath,
 		serviceName+".InhibitDevice",
 		operation,
 		"ModemManager could not inhibit the QDC507",
-		uid,
+		inhibitUID,
 		true,
 	); err != nil {
 		return nil, err
