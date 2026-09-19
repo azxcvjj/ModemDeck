@@ -119,6 +119,7 @@ func TestEnsurePreservesCompositionAndUsesFreshQADBKEYAfterReboot(t *testing.T) 
 		},
 		`AT+QADBKEY="` + firstPassword + `"`:  {{response: "OK\r\n"}},
 		`AT+QADBKEY="` + secondPassword + `"`: {{response: "OK\r\n"}},
+		`AT+QLINUXCMD="adbd"`:                 {{response: "OK\r\n"}},
 		write:                                 {{response: "OK\r\n"}},
 		"AT+CFUN=1,1":                         {{err: errors.New("serial AT port disconnected")}},
 	}}

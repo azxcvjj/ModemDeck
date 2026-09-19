@@ -311,6 +311,13 @@ func (m *Manager) authorizeADB(ctx context.Context, port string) error {
 	if !accepted {
 		return fmt.Errorf("QDC507 rejected the locally derived QADBKEY response")
 	}
+	// Some QDC507 firmware builds expose the ADB USB function only after the
+	// vendor Linux command explicitly starts adbd. This is a direct AT command
+	// on the inhibited serial port; ModemManager's AT proxy may reject it.
+	adbResponse, adbErr := m.at.Command(ctx, port, `AT+QLINUXCMD="adbd"`, 8*time.Second)
+	if adbErr != nil || !atResponseSucceeded(adbResponse) {
+		return fmt.Errorf("QDC507 failed to start adbd")
+	}
 	return nil
 }
 
