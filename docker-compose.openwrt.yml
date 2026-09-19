@@ -10,6 +10,7 @@ services:
     environment:
       MODEMDECK_HARDWARE_MODE: advanced
       MODEMDECK_DISCOVERY_BACKEND: sysfs
+      MODEMDECK_MEDIA_BINDINGS_FILE: /etc/modemdeck/media-bindings.json
       MODEMDECK_QDC507_USB_PROVISIONING: "false"
       MODEMDECK_DEVICE_ASSIGNMENTS_FILE: /etc/modemdeck/device-assignments.json
     command: ["--mode", "advanced", "--assignments", "/etc/modemdeck/device-assignments.json"]

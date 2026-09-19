@@ -82,3 +82,19 @@ Web health checks passed, the readiness API reported all four checks OK, and tot
 observed idle memory was about 38 MiB. No administrator was created automatically.
 The default locally generated certificate requires browser confirmation; certificate
 trust and microphone permission were not changed by the deployment.
+
+## Verified QDC507 media setup
+
+The device must be accessible via a Docker `devices` mapping, not just a bind-mounted
+USB directory. Check an O_RDWR open on the exact assigned USB node. Stop a competing
+host ADB server only after verifying it owns this same device; use the Agent private
+ADB socket thereafter. An empty container ADB list alone does not prove firmware failure.
+After USB re-enumeration, regenerate the exact node mapping and recreate the container.
+Do not expose unrelated USB devices or replace this with unrestricted device privileges.
+
+After checking ALSA card topology against the line physical path, set media.json as in
+hardware/README.md and map the corresponding sound devices. The hardware environment
+must specify MODEMDECK_MEDIA_BINDINGS_FILE=/etc/modemdeck/media-bindings.json.
+An iStoreOS QDC507 trial reached root ADB, kernel 3.18.44, resident route ready and
+Agent media=true with a verified Baiwang ALSA binding. This confirms configuration
+readiness only: end-to-end browser audio still requires an actual two-way call test.
