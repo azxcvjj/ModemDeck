@@ -3,6 +3,7 @@ package callmedia
 import (
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ func opusRTPParameters() webrtc.RTPCodecParameters {
 }
 
 func newWebRTCAPI() (*webrtc.API, error) {
+	settings, err := mediaNetworkSettings(os.Getenv("MODEMDECK_MEDIA_ADVERTISE_IP"), os.Getenv("MODEMDECK_MEDIA_UDP_RANGE"))
+	if err != nil {
+		return nil, err
+	}
+
 	engine := &webrtc.MediaEngine{}
 	if err := engine.RegisterCodec(opusRTPParameters(), webrtc.RTPCodecTypeAudio); err != nil {
 		return nil, err
@@ -39,6 +45,7 @@ func newWebRTCAPI() (*webrtc.API, error) {
 		return nil, err
 	}
 	return webrtc.NewAPI(
+		webrtc.WithSettingEngine(settings),
 		webrtc.WithMediaEngine(engine),
 		webrtc.WithInterceptorRegistry(interceptors),
 	), nil

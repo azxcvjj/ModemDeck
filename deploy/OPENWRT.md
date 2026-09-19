@@ -98,3 +98,15 @@ must specify MODEMDECK_MEDIA_BINDINGS_FILE=/etc/modemdeck/media-bindings.json.
 An iStoreOS QDC507 trial reached root ADB, kernel 3.18.44, resident route ready and
 Agent media=true with a verified Baiwang ALSA binding. This confirms configuration
 readiness only: end-to-end browser audio still requires an actual two-way call test.
+
+## LAN WebRTC through Docker bridge
+
+Publishing HTTPS does not expose WebRTC media. For a bridge-network API, build the
+API from this branch and set both MODEMDECK_MEDIA_ADVERTISE_IP to the reachable LAN
+IPv4 and MODEMDECK_MEDIA_UDP_RANGE to a bounded min-max range (for example 40000-40015).
+Publish exactly that same UDP range on that LAN address. Both settings are optional
+as a pair; absent settings retain upstream behaviour. Never advertise the container
+172.x address to LAN browsers. Refresh the Web nginx upstream after replacing API.
+This applies to direct LAN calls; external relay/TURN remains a separate setup.
+The observed symptom before correction was a successful offer/answer exchange followed
+by `media START was not received before the deadline`, before PCM playback began.
