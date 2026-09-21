@@ -35,7 +35,7 @@ enum ModemDeckAPIError: LocalizedError {
 private final class ModemDeckOfflineCache {
     private let credentialStore: ModemDeckCredentialStore
     private let fileManager: FileManager
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "modemdeck.offline-cache", qos: .utility)
     private let rootURL: URL?
 
     init(
@@ -56,22 +56,24 @@ private final class ModemDeckOfflineCache {
     }
 
     func read<T: Decodable>(_ type: T.Type, key: String) -> T? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let fileURL = scopedFileURL(key: key),
-              let data = try? Data(contentsOf: fileURL) else {
-            return nil
+        guard let fileURL = scopedFileURL(key: key) else { return nil }
+        return queue.sync {
+            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            return try? JSONDecoder().decode(type, from: data)
         }
-        return try? JSONDecoder().decode(type, from: data)
     }
 
     func write<T: Encodable>(_ value: T, key: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let fileURL = scopedFileURL(key: key),
-              let data = try? JSONEncoder().encode(value) else {
-            return
+        // Capture the pairing scope before queueing: a pending write must never
+        // land in a replacement account's cache. The serial queue preserves order.
+        guard let fileURL = scopedFileURL(key: key) else { return }
+        queue.async { [self] in
+            guard let data = try? JSONEncoder().encode(value) else { return }
+            write(data, to: fileURL)
         }
+    }
+
+    private func write(_ data: Data, to fileURL: URL) {
         let directory = fileURL.deletingLastPathComponent()
         do {
             try fileManager.createDirectory(
@@ -93,10 +95,8 @@ private final class ModemDeckOfflineCache {
     }
 
     func clearCurrentScope() {
-        lock.lock()
-        defer { lock.unlock() }
         guard let directory = scopedDirectoryURL() else { return }
-        try? fileManager.removeItem(at: directory)
+        queue.async { [self] in try? fileManager.removeItem(at: directory) }
     }
 
     private func scopedFileURL(key: String) -> URL? {
@@ -854,6 +854,17 @@ final class ModemDeckAPIClient {
 
     func cachedBootstrap() -> ModemDeckBootstrap? {
         offlineCache.read(ModemDeckBootstrap.self, key: "bootstrap")
+    }
+
+    // Nonisolated async work runs off the main actor. Store initializers must
+    // not read/decode the entire offline history before the first window opens.
+    func cachedStartupData() async -> (
+        session: ModemDeckMobileSession?, bootstrap: ModemDeckBootstrap?,
+        contacts: [ModemDeckContact], threads: [ModemDeckMessageThread],
+        unread: ModemDeckUnreadSummary, calls: [ModemDeckCallRecord], recordings: [ModemDeckRecording]
+    ) {
+        (cachedMobileSession(), cachedBootstrap(), cachedContacts(), cachedMessageThreads(),
+         cachedUnreadSummary(), cachedCalls(), cachedRecordings())
     }
 
     func clearCachedData() {

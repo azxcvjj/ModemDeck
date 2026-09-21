@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const iosRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const project = path.join(iosRoot, 'ios/App/App.xcodeproj')
 const derivedData = path.join(iosRoot, 'DerivedData')
-const developerDirectory = '/Applications/Xcode-beta.app/Contents/Developer'
+const developerDirectory = process.env.DEVELOPER_DIR || '/Applications/Xcode-beta.app/Contents/Developer'
 
 function run(command, args) {
   return new Promise((resolve, reject) => {

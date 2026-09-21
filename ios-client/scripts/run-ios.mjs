@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const iosRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const developerDirectory = '/Applications/Xcode-beta.app/Contents/Developer'
+const developerDirectory = process.env.DEVELOPER_DIR || '/Applications/Xcode-beta.app/Contents/Developer'
 const simulatorApplications = [
   path.join(
     path.dirname(developerDirectory),
@@ -75,7 +75,10 @@ const preferredNames = requestedFamily === 'ipad'
       'iPhone 16',
       'iPhone 15'
     ]
-const selectedDevice = devices
+const requestedSimulatorID = process.env.MODEMDECK_SIMULATOR_ID?.trim()
+const selectedDevice = requestedSimulatorID
+  ? devices.find(device => device.udid === requestedSimulatorID)
+  : devices
   .slice()
   .sort((left, right) => {
     const leftRank = preferredNames.indexOf(left.name)
@@ -86,7 +89,11 @@ const selectedDevice = devices
     return right.runtime.localeCompare(left.runtime)
   })[0]
 
-if (!selectedDevice) throw new Error(`No available ${familyPrefix} simulator was found`)
+if (!selectedDevice) {
+  throw new Error(requestedSimulatorID
+    ? `No available ${familyPrefix} simulator matches MODEMDECK_SIMULATOR_ID`
+    : `No available ${familyPrefix} simulator was found`)
+}
 
 if (selectedDevice.state !== 'Booted') {
   await run('xcrun', ['simctl', 'boot', selectedDevice.udid])

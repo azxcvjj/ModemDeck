@@ -573,6 +573,7 @@ private struct ModemDeckSettingsLoadState: View {
 private struct ModemDeckPreferencesSettingsView: View {
     @ObservedObject var controller: ModemDeckSessionController
     @StateObject private var contactsStore: ModemDeckContactsStore
+    @AppStorage("modemdeck.appearance") private var appearance = ModemDeckAppearance.system.rawValue
     @State private var language = "auto"
     @State private var defaultLineID = ""
     @State private var profileContactID = ""
@@ -660,6 +661,13 @@ private struct ModemDeckPreferencesSettingsView: View {
                 ) { updateDefaultLine($0) }
             }
 
+            ModemDeckSettingsModule(title: controller.text("外观", "Appearance"),
+                footer: controller.text("仅用于这台设备。", "Applies to this device.")) {
+                ModemDeckSettingsMenuRow(title: controller.text("显示模式", "Display Mode"), icon: "circle.lefthalf.filled",
+                    value: appearanceChoices.first(where: { $0.id == appearance })?.title ?? appearance,
+                    choices: appearanceChoices) { appearance = $0 }
+            }
+
             if !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.system(size: 13))
@@ -670,6 +678,14 @@ private struct ModemDeckPreferencesSettingsView: View {
         .onAppear { synchronize() }
         .onChange(of: controller.bootstrap) { _ in synchronize() }
         .task { await contactsStore.load() }
+    }
+
+    private var appearanceChoices: [ModemDeckSettingsChoice] {
+        [
+            .init(id: "system", title: controller.text("跟随系统", "System")),
+            .init(id: "light", title: controller.text("浅色", "Light")),
+            .init(id: "dark", title: controller.text("深色", "Dark"))
+        ]
     }
 
     private var languageTitle: String {

@@ -1,10 +1,43 @@
 import SwiftUI
+import UIKit
+
+private struct ModemDeckAllowsContextMenuKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var modemDeckAllowsContextMenu: Bool {
+        get { self[ModemDeckAllowsContextMenuKey.self] }
+        set { self[ModemDeckAllowsContextMenuKey.self] = newValue }
+    }
+}
+
+private struct ModemDeckSelectionGesture: ViewModifier {
+    let action: (() -> Void)?
+    let enabled: Bool
+    let title: String
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let action {
+            content
+                .highPriorityGesture(
+                    LongPressGesture(minimumDuration: 0.45, maximumDistance: 10).onEnded { _ in
+                        guard enabled else { return }
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        action()
+                    }, including: enabled ? .all : .none
+                )
+                .accessibilityAction(named: Text(title)) { if enabled { action() } }
+        } else { content }
+    }
+}
 
 enum ModemDeckRoute: Hashable {
     case contact(String)
     case message(String)
     case call(String)
     case recording(String)
+    case recordings
 }
 
 private struct ModemDeckNavigateKey: EnvironmentKey {
@@ -64,6 +97,8 @@ struct ModemDeckRouteContent: View {
                     showsBackButton: showsBackButton
                 )
             } else { missingDetail }
+        case .recordings:
+            ModemDeckRecordingsView(controller: controller, showsBackButton: showsBackButton)
         case .recording(let id):
             if let recording = calls.recordings.first(where: { $0.id == id }) {
                 ModemDeckRecordingDetailView(
@@ -121,6 +156,7 @@ struct ModemDeckListRow<Content: View>: View {
     var accessibilityID = ""
     let deleteMessage: String
     let open: () -> Void
+    var beginSelection: (() -> Void)? = nil
     var toggleRead: (() async throws -> Void)? = nil
     let toggleFavorite: () async throws -> Void
     let delete: () async throws -> Void
@@ -160,11 +196,16 @@ struct ModemDeckListRow<Content: View>: View {
                             .padding(.leading, ModemDeckLayout.listHorizontalPadding)
                     }
                     content(menuActions)
+                        .environment(\.modemDeckAllowsContextMenu, beginSelection == nil && !selecting)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .modifier(ModemDeckSelectionGesture(
+                action: beginSelection, enabled: enabled && !busy && !selecting,
+                title: controller.text("选择此项", "Select item")
+            ))
             .disabled(!enabled || busy)
             .accessibilityIdentifier(accessibilityID)
             .accessibilityAddTraits(selected ? .isSelected : [])
@@ -172,9 +213,10 @@ struct ModemDeckListRow<Content: View>: View {
                 unread.map { $0 ? controller.text("未读", "Unread") : controller.text("已读", "Read") },
                 favorite ? controller.text("已收藏", "Favorite") : nil
             ].compactMap { $0 }.joined(separator: ", "))
-            ModemDeckListDivider()
+            ModemDeckListDivider(leading: ModemDeckLayout.listTextLeading + (selecting
+                ? ModemDeckLayout.listHorizontalPadding + ModemDeckLayout.listSelectionMarkWidth : 0))
         }
-        .background(selected ? Color.mdSelected : Color.mdSurface)
+        .background(selected ? Color.mdSelected : Color.mdBackground)
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             if !selecting, let toggleRead {
                 Button { perform(toggleRead) } label: { Label(readTitle, systemImage: readIcon) }
@@ -202,6 +244,10 @@ struct ModemDeckListRow<Content: View>: View {
         )) {
             Button(controller.text("好", "OK"), role: .cancel) { errorMessage = "" }
         } message: { Text(errorMessage) }
+        // Retained tabs must recreate the native swipe surface on re-entry.
+        // This identity is below the row's action state, so pending requests,
+        // selection, navigation, drafts and the List's scroll owner survive.
+        .id(controller.listInteractionRevision)
     }
 
     private func perform(_ action: @escaping () async throws -> Void) {

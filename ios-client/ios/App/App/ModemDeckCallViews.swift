@@ -2,22 +2,6 @@ import SwiftUI
 import UIKit
 import AVFAudio
 
-private struct ModemDeckDialerPanelShape: Shape {
-    let radius: CGFloat
-    let roundsAllCorners: Bool
-
-    func path(in rect: CGRect) -> Path {
-        let corners: UIRectCorner = roundsAllCorners ? .allCorners : [.topLeft, .topRight]
-        return Path(
-            UIBezierPath(
-                roundedRect: rect,
-                byRoundingCorners: corners,
-                cornerRadii: CGSize(width: radius, height: radius)
-            ).cgPath
-        )
-    }
-}
-
 private enum ModemDeckDialTargetError: Equatable {
     case none
     case required
@@ -30,15 +14,6 @@ private struct ModemDeckDialTarget {
     let original: String
     let normalized: String
     let error: ModemDeckDialTargetError
-}
-
-private struct ModemDeckDialSuggestion: Identifiable {
-    let contact: ModemDeckContact
-    let phone: ModemDeckContactPhone
-
-    var id: String {
-        "\(contact.id):\(phone.id ?? phone.displayNumber)"
-    }
 }
 
 @MainActor
@@ -120,14 +95,10 @@ private struct ModemDeckDialKeyStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(width: size, height: size)
-            .background(
-                configuration.isPressed
-                    ? Color(red: 0.86, green: 0.88, blue: 0.90)
-                    : Color(red: 0.945, green: 0.953, blue: 0.961)
-            )
-            .clipShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.9 : 1)
+            .frame(maxWidth: .infinity, minHeight: size)
+            .background(configuration.isPressed ? Color.mdBorder : Color.mdSurfaceHover)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(
                 reduceMotion ? nil : .easeOut(duration: 0.08),
                 value: configuration.isPressed
@@ -152,11 +123,11 @@ private struct ModemDeckDialKeyButton: View {
         } label: {
             VStack(spacing: digit == "0" ? 1 : 3) {
                 Text(digit)
-                    .font(.system(size: size < 60 ? 24 : 26, weight: .medium, design: .rounded))
+                    .font(.system(size: 30, weight: .regular))
                     .lineLimit(1)
                 if !letters.isEmpty {
                     Text(letters)
-                        .font(.system(size: digit == "0" ? 14 : 9, weight: .bold))
+                        .font(.system(size: 9, weight: .medium))
                         .tracking(digit == "0" ? 0 : 1.1)
                         .lineLimit(1)
                 }
@@ -224,6 +195,65 @@ private func normalizeModemDeckDialTarget(_ value: String) -> ModemDeckDialTarge
     return ModemDeckDialTarget(original: original, normalized: normalized, error: .none)
 }
 
+/// The session owns drafts; dismissing a presentation never destroys an edit.
+@MainActor
+final class ModemDeckDialDraft: ObservableObject {
+    @Published var number = ""
+    @Published var selectedLineID = ""
+    @Published var recording = false
+    var recordingInitialized = false
+    var lineSelectionOverridden = false
+
+    func clear() {
+        number = ""
+        selectedLineID = ""
+        recording = false
+        recordingInitialized = false
+        lineSelectionOverridden = false
+    }
+}
+
+/// Uses native text selection and paste, with the app keypad as its input surface.
+private struct ModemDeckDialNumberField: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let accessibilityLabel: String
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: ModemDeckDialNumberField
+        init(_ parent: ModemDeckDialNumberField) { self.parent = parent }
+        @objc func changed(_ field: UITextField) { parent.text = String((field.text ?? "").prefix(64)) }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.delegate = context.coordinator
+        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        field.inputView = UIView(frame: .zero)
+        field.textAlignment = .center
+        field.font = UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: .systemFont(ofSize: 34))
+        field.adjustsFontForContentSizeCategory = true
+        field.adjustsFontSizeToFitWidth = true
+        field.minimumFontSize = 18
+        field.textContentType = .telephoneNumber
+        field.keyboardType = .phonePad
+        field.autocorrectionType = .no
+        field.accessibilityIdentifier = "dial-number"
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text { field.text = text }
+        field.textColor = UIColor(Color.mdText)
+        field.tintColor = UIColor(Color.mdAccent)
+        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: UIColor(Color.mdMuted), .font: UIFont.preferredFont(forTextStyle: .title2)
+        ])
+        field.accessibilityLabel = accessibilityLabel
+    }
+}
+
 struct ModemDeckDialerPanel: View {
     @ObservedObject var controller: ModemDeckSessionController
     let close: () -> Void
@@ -232,46 +262,29 @@ struct ModemDeckDialerPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(controller.text("拨号", "Dial"))
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.mdText)
+                Text(controller.text("拨号", "Dial")).font(.headline).foregroundColor(.mdText)
                 Spacer()
                 Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .semibold))
+                    Image(systemName: "chevron.down")
                         .foregroundColor(.mdMuted)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(controller.text("收起拨号盘", "Collapse dialer"))
+                .accessibilityIdentifier("dialer-collapse")
             }
-            .padding(.horizontal, 18)
-            .frame(height: 54)
-            .overlay(alignment: .bottom) { Rectangle().fill(Color.mdBorder).frame(height: 1) }
-
+            .padding(.horizontal, 24)
+            .padding(.top, 14)
             ModemDeckDialerView(controller: controller)
         }
-        .frame(maxWidth: floating ? 390 : .infinity, maxHeight: 720)
-        .background(Color.mdSurface)
-        .clipShape(
-            ModemDeckDialerPanelShape(
-                radius: floating ? 12 : 8,
-                roundsAllCorners: floating
-            )
-        )
-        .overlay(
-            ModemDeckDialerPanelShape(
-                radius: floating ? 12 : 8,
-                roundsAllCorners: floating
-            )
-            .stroke(Color.mdBorder, lineWidth: floating ? 1 : 0)
-        )
-        .shadow(color: Color.black.opacity(0.16), radius: 18, y: floating ? 4 : -2)
+        .background(Color.mdSurface.ignoresSafeArea())
+        .accessibilityAction(.escape, close)
     }
 }
 
 struct ModemDeckDialerPage: View {
     @ObservedObject var controller: ModemDeckSessionController
-
     var body: some View {
         VStack(spacing: 0) {
             ModemDeckPageHeader(title: controller.text("拨号", "Dial"))
@@ -285,21 +298,12 @@ struct ModemDeckDialerPage: View {
 struct ModemDeckDialerView: View {
     @ObservedObject var controller: ModemDeckSessionController
     @ObservedObject private var callController: ModemDeckCallController
-    @StateObject private var contactsStore: ModemDeckContactsStore
-
-    @State private var number = ""
-    @State private var selectedLineID = ""
-    @State private var recording = false
-    @State private var recordingDefault = false
-    @State private var recordingReady = false
+    @ObservedObject private var contactsStore: ModemDeckContactsStore
+    @ObservedObject private var draft: ModemDeckDialDraft
+    @State private var showingContacts = false
+    @State private var contactQuery = ""
     @State private var recordingError = ""
-    @State private var matchedContactID = ""
-    @State private var matchedContactName = ""
-    @State private var matchedNumber = ""
-    @State private var preferredLineID = ""
-    @State private var lineSelectionOverridden = false
     @State private var validationAttempted = false
-    @FocusState private var numberFocused: Bool
 
     private let keys = [
         ("1", ""), ("2", "ABC"), ("3", "DEF"),
@@ -311,514 +315,204 @@ struct ModemDeckDialerView: View {
     init(controller: ModemDeckSessionController) {
         self.controller = controller
         _callController = ObservedObject(wrappedValue: controller.callController)
-        _contactsStore = StateObject(wrappedValue: controller.contactsStore)
+        _contactsStore = ObservedObject(wrappedValue: controller.contactsStore)
+        _draft = ObservedObject(wrappedValue: controller.dialDraft)
     }
 
-    private var lines: [ModemDeckLine] {
-        controller.voiceDialLines
-    }
-
-    private var selectedLine: ModemDeckLine? {
-        lines.first(where: { $0.id == selectedLineID }) ?? lines.first
-    }
-
-    private var dialTarget: ModemDeckDialTarget {
-        normalizeModemDeckDialTarget(number)
-    }
-
-    private var validationVisible: Bool {
-        validationAttempted && dialTarget.error != .none && dialTarget.error != .required
-    }
-
-    private var validationMessage: String {
-        switch dialTarget.error {
-        case .tooLong:
-            return controller.text("号码太长", "Number is too long")
-        case .invalidCharacter:
-            return controller.text("只能使用可拨号字符", "Use dialable characters only")
-        case .invalidLength:
-            return controller.text("请输入有效号码", "Enter a dialable number")
-        default:
-            return ""
-        }
-    }
-
-    private var suggestions: [ModemDeckDialSuggestion] {
-        let query = number.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return [] }
-        let digits = query.filter { $0.isNumber }
-        var matches: [ModemDeckDialSuggestion] = []
-        for contact in contactsStore.contacts {
-            let nameMatch = contact.displayName.lowercased().contains(query)
-            for phone in contact.phones {
-                let phoneDigits = phone.displayNumber.filter { $0.isNumber }
-                if nameMatch || (!digits.isEmpty && phoneDigits.contains(digits)) {
-                    matches.append(ModemDeckDialSuggestion(contact: contact, phone: phone))
-                    if matches.count == 6 { return matches }
-                }
-            }
-        }
-        return matches
-    }
-
-    private var showsSuggestions: Bool {
-        numberFocused && !suggestions.isEmpty && matchedNumber != number
-    }
-
-    private var showsContactMatch: Bool {
-        !matchedContactName.isEmpty && matchedNumber == number
-    }
-
+    private var lines: [ModemDeckLine] { controller.voiceDialLines }
+    private var selectedLine: ModemDeckLine? { lines.first { $0.id == draft.selectedLineID } }
+    private var dialTarget: ModemDeckDialTarget { normalizeModemDeckDialTarget(draft.number) }
     private var matchedContact: ModemDeckContact? {
-        contactsStore.contacts.first(where: { $0.id == matchedContactID })
+        contactsStore.contacts.modemDeckContact(id: nil, number: draft.number)
+    }
+    private var canDial: Bool {
+        dialTarget.error == .none && selectedLine != nil && controller.isOnline &&
+        !callController.busy && callController.call == nil
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let compact = geometry.size.height < 620
-            let keySize: CGFloat = compact ? 56 : 62
-            let keySpacing: CGFloat = 9
-
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(controller.text("通话线路", "Calling line"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.mdMuted)
-                    lineSelector
+        ScrollView {
+            VStack(spacing: 12) {
+                VStack(spacing: 3) {
+                    ModemDeckDialNumberField(text: $draft.number,
+                        placeholder: controller.text("输入号码", "Enter number"),
+                        accessibilityLabel: controller.text("电话号码", "Phone number"))
+                        .frame(height: 54)
+                    Text(matchedContact?.displayName ?? controller.text("选择联系人，或直接输入号码", "Choose a contact or enter a number"))
+                        .font(.footnote).foregroundColor(.mdMuted)
+                        .lineLimit(1).frame(minHeight: 24)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, compact ? 10 : 16)
-                .padding(.bottom, compact ? 8 : 13)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(Color.mdBorder).frame(height: 1)
+                HStack(spacing: 16) {
+                    Menu {
+                        ForEach(lines) { line in
+                            Button {
+                                draft.selectedLineID = line.id
+                                draft.lineSelectionOverridden = true
+                            } label: {
+                                if line.id == draft.selectedLineID {
+                                    Label(line.displayName, systemImage: "checkmark")
+                                } else { Text(line.displayName) }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(selectedLine?.displayName ?? controller.text("无可用线路", "No available line"))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }
+                        .font(.subheadline).foregroundColor(.mdText)
+                        .padding(.horizontal, 12).frame(minHeight: 44)
+                        .background(Color.mdSurfaceHover)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .disabled(lines.isEmpty)
+                    .accessibilityLabel(controller.text("通话线路", "Calling line"))
+                    .accessibilityValue(selectedLine?.displayName ?? "")
+                    Toggle(controller.text("本次录音", "Record call"), isOn: $draft.recording)
+                        .font(.footnote).tint(.mdAccent).fixedSize()
+                        .disabled(!draft.recordingInitialized)
+                        .accessibilityIdentifier("dial-recording")
                 }
+                .frame(minHeight: 44)
 
-                numberEntry(compact: compact)
-                    .zIndex(10)
-
-                Spacer(minLength: compact ? 0 : 8)
-
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.fixed(62), spacing: 26), count: 3),
-                    spacing: keySpacing
-                ) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 10) {
                     ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
-                        ModemDeckDialKeyButton(
-                            digit: key.0,
-                            letters: key.1,
-                            size: keySize,
-                            action: appendDigit
-                        )
+                        ModemDeckDialKeyButton(digit: key.0, letters: key.1, size: 62, action: appendDigit)
+                            .accessibilityIdentifier("dial-key-\(key.0)")
                     }
                 }
-                .frame(width: 238)
-
-                Spacer(minLength: compact ? 0 : 8)
-
-                if !recordingError.isEmpty {
-                    Text(recordingError)
-                        .font(.system(size: 11))
-                        .foregroundColor(.mdDanger)
-                        .lineLimit(2)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 4)
+                HStack(spacing: 14) {
+                    Button { showingContacts = true } label: {
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .font(.title3).frame(width: 44, height: 56)
+                    }
+                    .accessibilityLabel(controller.text("选择联系人", "Choose contact"))
+                    Button(action: startCall) {
+                        HStack(spacing: 10) {
+                            if callController.busy { ProgressView().tint(.mdOnAccent) }
+                            else { Image(systemName: "phone.fill") }
+                            Text(controller.text("拨打", "Call"))
+                        }
+                        .font(.headline).foregroundColor(.mdOnAccent)
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(Color.mdAccent.opacity(canDial ? 1 : 0.4))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                    .disabled(!canDial)
+                    .accessibilityIdentifier("dial-call")
+                    Button(action: removeDigit) {
+                        Image(systemName: "delete.left")
+                            .font(.title3).frame(width: 44, height: 56)
+                    }
+                    .disabled(draft.number.isEmpty)
+                    .accessibilityLabel(controller.text("删除一位", "Delete digit"))
+                    .accessibilityIdentifier("dial-delete")
                 }
-
-                actionBar(compact: compact)
-
+                .buttonStyle(.plain).foregroundColor(.mdText)
+                if lines.isEmpty || !controller.isOnline {
+                    Text(controller.text("无可用线路，请检查线路连接。", "No available line. Check your connection."))
+                        .font(.footnote).foregroundColor(.mdMuted)
+                }
+                if !draft.number.isEmpty && dialTarget.error != .none {
+                    Text(controller.text("请输入有效的电话号码", "Enter a valid phone number"))
+                        .font(.footnote).foregroundColor(.mdDanger)
+                }
+                ModemDeckInlineError(message: recordingError)
                 ModemDeckInlineError(message: callController.errorMessage)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, callController.errorMessage.isEmpty ? 0 : 8)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: 340)
+            .padding(.horizontal, 20).padding(.bottom, 20)
+            .frame(maxWidth: .infinity)
         }
+        .scrollDismissesKeyboard(.interactively)
         .background(Color.mdSurface)
         .onAppear { chooseDefaultLine() }
         .onChange(of: lines.map(\.id)) { _ in chooseDefaultLine() }
+        .onChange(of: draft.number) { _ in
+            validationAttempted = false
+            if !draft.lineSelectionOverridden {
+                draft.selectedLineID = controller.voiceDialLine(preferredID: matchedContact?.preferredLineId)?.id ?? ""
+            }
+        }
         .task {
             await contactsStore.load()
             await loadRecordingPreference()
         }
+        .sheet(isPresented: $showingContacts) { contactPicker }
     }
 
-    private func numberEntry(compact: Bool) -> some View {
-        let fieldHeight: CGFloat = compact ? 58 : 68
-        return VStack(spacing: 0) {
-            numberField(height: fieldHeight)
-            if showsContactMatch {
-                HStack(spacing: 8) {
-                    ModemDeckAvatar(
-                        name: matchedContactName,
-                        avatarSource: matchedContact?.avatar,
-                        size: 28
-                    )
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(controller.text("匹配联系人", "Matched contact"))
-                            .font(.system(size: 9))
-                            .foregroundColor(.mdMuted)
-                        Text(matchedContactName)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.mdText)
-                            .lineLimit(1)
-                    }
-                }
-                .padding(.leading, 6)
-                .padding(.trailing, 11)
-                .frame(height: 36)
-                .background(Color.mdAccentSoft)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Color.mdAccent.opacity(0.12), lineWidth: 1))
-                .padding(.top, 6)
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            }
-        }
-        .frame(height: fieldHeight + (showsContactMatch ? 42 : 0), alignment: .top)
-        .overlay(alignment: .top) {
-            if showsSuggestions {
-                suggestionMenu
-                    .offset(y: fieldHeight - 1)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                    .zIndex(20)
-            }
-        }
-    }
-
-    private func numberField(height: CGFloat) -> some View {
-        ZStack {
-            TextField(
-                "",
-                text: $number,
-                prompt: Text(controller.text("输入号码或搜索联系人", "Enter a number or search contacts"))
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.mdMuted)
-            )
-            .keyboardType(.namePhonePad)
-            .font(.system(size: 24, weight: .semibold))
-            .monospacedDigit()
-            .foregroundColor(.mdText)
-            .multilineTextAlignment(.center)
-            .textContentType(.telephoneNumber)
-            .padding(.horizontal, 58)
-            .focused($numberFocused)
-            .onChange(of: number) { value in
-                validationAttempted = false
-                if value != matchedNumber {
-                    matchedContactID = ""
-                    matchedContactName = ""
-                    matchedNumber = ""
-                    preferredLineID = ""
-                    if !lineSelectionOverridden { chooseDefaultLine(force: true) }
-                }
-            }
-            .onSubmit { startCall() }
-
-            if !number.isEmpty {
-                HStack(spacing: 2) {
-                    Spacer()
-                    if validationVisible {
-                        Text(controller.text("无效", "Invalid"))
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.mdDanger)
-                            .lineLimit(1)
-                    }
-                    Button(action: removeDigit) {
-                        Image(systemName: "delete.left")
-                            .font(.system(size: 18))
-                            .foregroundColor(.mdMuted)
-                            .frame(width: 42, height: 42)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(controller.text("删除一位", "Delete digit"))
-                }
-                .padding(.trailing, 7)
-            }
-        }
-        .frame(height: height)
-        .background(numberFocused ? Color.mdAccent.opacity(0.04) : Color.mdSurface)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(validationVisible ? Color.mdDanger : (numberFocused ? Color.mdAccent : Color.mdBorder))
-                .frame(height: 2)
-        }
-        .overlay(alignment: .bottomLeading) {
-            if validationVisible {
-                Text(validationMessage)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.mdDanger)
-                    .lineLimit(1)
-                    .padding(.leading, 12)
-                    .padding(.bottom, 4)
-            }
-        }
-    }
-
-    private var suggestionMenu: some View {
-        VStack(spacing: 0) {
-            ForEach(suggestions) { suggestion in
-                Button {
-                    chooseSuggestion(suggestion)
-                } label: {
-                    HStack(spacing: 10) {
-                        ModemDeckAvatar(
-                            name: suggestion.contact.displayName,
-                            avatarSource: suggestion.contact.avatar,
-                            size: 32
-                        )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(suggestion.contact.displayName)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.mdText)
-                                .lineLimit(1)
-                            Text("\(suggestion.phone.label) · \(suggestion.phone.displayNumber)")
-                                .font(.system(size: 11))
-                                .foregroundColor(.mdMuted)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        if suggestion.phone.primary {
-                            Text(controller.text("主号码", "Primary"))
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.mdAccentStrong)
+    private var contactPicker: some View {
+        NavigationStack {
+            List {
+                ForEach(contactsStore.contacts.filter { contact in
+                    contactQuery.isEmpty || contact.displayName.localizedCaseInsensitiveContains(contactQuery) ||
+                    contact.phones.contains { $0.displayNumber.localizedCaseInsensitiveContains(contactQuery) }
+                }) { contact in
+                    Section(contact.displayName) {
+                        ForEach(Array(contact.phones.enumerated()), id: \.offset) { _, phone in
+                            Button {
+                                draft.number = phone.displayNumber
+                                if !draft.lineSelectionOverridden {
+                                    draft.selectedLineID = controller.voiceDialLine(preferredID: contact.preferredLineId)?.id ?? ""
+                                }
+                                showingContacts = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(phone.displayNumber).foregroundColor(.mdText)
+                                    Text(phone.label).font(.footnote).foregroundColor(.mdMuted)
+                                }
+                                .frame(minHeight: 44)
+                            }
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 52)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if suggestion.id != suggestions.last?.id {
-                    Rectangle().fill(Color.mdBorder).frame(height: 1)
                 }
             }
-        }
-        .frame(maxWidth: 350)
-        .background(Color.mdSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.mdBorder, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.14), radius: 14, y: 5)
-        .padding(.horizontal, 20)
-    }
-
-    private func actionBar(compact: Bool) -> some View {
-        let secondarySize: CGFloat = compact ? 48 : 52
-        let primarySize: CGFloat = compact ? 56 : 62
-        return HStack(alignment: .top, spacing: 26) {
-            Button { recording.toggle() } label: {
-                VStack(spacing: 5) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundColor(recording ? .white : .mdText)
-                        .frame(width: secondarySize, height: secondarySize)
-                        .background(recording ? Color.mdDanger : Color(red: 0.945, green: 0.953, blue: 0.961))
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(recording ? Color.mdDanger : Color.mdBorder, lineWidth: 1))
-                    Text(controller.text("录音", "Record"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(recording ? .mdDanger : .mdMuted)
+            .searchable(text: $contactQuery, prompt: controller.text("搜索姓名或号码", "Search name or number"))
+            .navigationTitle(controller.text("选择联系人", "Choose contact"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(controller.text("取消", "Cancel")) { showingContacts = false }
                 }
-                .frame(width: 62)
-                .frame(minHeight: 80)
             }
-            .buttonStyle(.plain)
-            .disabled(!recordingReady)
-            .opacity(recordingReady ? 1 : 0.5)
-
-            Button { startCall() } label: {
-                VStack(spacing: 5) {
-                    ZStack {
-                        Circle().fill(Color.mdAccent)
-                        if callController.busy {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: "phone.fill")
-                                .font(.system(size: 22, weight: .bold))
-                                .foregroundColor(.white)
-                        }
-                    }
-                    .frame(width: primarySize, height: primarySize)
-                    Text(controller.text("拨打", "Call"))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.mdAccent)
-                }
-                .frame(width: 62)
-                .frame(minHeight: 84)
-            }
-            .buttonStyle(.plain)
-            .disabled(
-                number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    selectedLine == nil ||
-                    callController.busy ||
-                    !controller.isOnline
-            )
-            .opacity(selectedLine == nil || !controller.isOnline ? 0.5 : 1)
-
-            Color.clear.frame(width: 62, height: 84)
-        }
-        .frame(width: 238)
-        .padding(.top, compact ? 8 : 10)
-        .frame(maxWidth: .infinity, minHeight: compact ? 96 : 108)
-        .background(Color.mdSurface)
-        .overlay(alignment: .top) {
-            Rectangle().fill(Color.mdBorder).frame(height: 1)
         }
     }
 
-    @ViewBuilder
-    private var lineSelector: some View {
-        if lines.count > 1 {
-            Menu {
-                ForEach(lines) { line in
-                    Button(line.displayName) {
-                        selectedLineID = line.id
-                        lineSelectionOverridden = true
-                    }
-                }
-            } label: {
-                lineSelectorLabel
-            }
-        } else {
-            lineSelectorLabel
-        }
+    private func chooseDefaultLine() {
+        guard !lines.contains(where: { $0.id == draft.selectedLineID }) else { return }
+        draft.selectedLineID = controller.voiceDialLine(preferredID: nil)?.id ?? ""
     }
-
-    private var lineSelectorLabel: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "simcard.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(selectedLine?.tint ?? .mdMuted)
-                .frame(width: 36, height: 36)
-                .background((selectedLine?.tint ?? Color.mdMuted).opacity(0.10))
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(selectedLine?.displayName ?? controller.text("没有可用线路", "No available line"))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.mdText)
-                    if selectedLine?.id == controller.bootstrap?.lineSettings.defaultLineId {
-                        Text(controller.text("默认", "Default"))
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.mdAccentStrong)
-                            .padding(.horizontal, 5)
-                            .frame(height: 17)
-                            .background(Color.mdAccentSoft)
-                            .clipShape(Capsule())
-                    }
-                }
-                if let line = selectedLine {
-                    Text([line.phoneNumber, line.networkName].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.system(size: 11))
-                        .foregroundColor(.mdMuted)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            if lines.count > 1 {
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.mdFaint)
-            }
-        }
-        .padding(.horizontal, 13)
-        .frame(height: 54)
-        .background(Color.mdSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.mdBorder, lineWidth: 1)
-        )
-    }
-
-    private func chooseDefaultLine(force: Bool = false) {
-        if !force,
-           !selectedLineID.isEmpty,
-           lines.contains(where: { $0.id == selectedLineID }) {
-            return
-        }
-        if !lineSelectionOverridden,
-           !preferredLineID.isEmpty,
-           lines.contains(where: { $0.id == preferredLineID }) {
-            selectedLineID = preferredLineID
-            return
-        }
-        let defaultID = controller.bootstrap?.lineSettings.defaultLineId ?? ""
-        selectedLineID = lines.contains(where: { $0.id == defaultID }) ? defaultID : (lines.first?.id ?? "")
-    }
-
     private func appendDigit(_ digit: String) {
-        number.append(digit)
-        matchedContactID = ""
-        matchedContactName = ""
-        matchedNumber = ""
-        preferredLineID = ""
+        guard draft.number.count < 64 else { return }
+        draft.number.append(digit)
         validationAttempted = false
-        if !lineSelectionOverridden { chooseDefaultLine(force: true) }
         UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
         ModemDeckDTMFTonePlayer.shared.play(digit)
     }
-
     private func removeDigit() {
-        guard !number.isEmpty else { return }
-        number.removeLast()
-        matchedContactID = ""
-        matchedContactName = ""
-        matchedNumber = ""
-        preferredLineID = ""
+        guard !draft.number.isEmpty else { return }
+        draft.number.removeLast()
         validationAttempted = false
         UISelectionFeedbackGenerator().selectionChanged()
     }
-
-    private func chooseSuggestion(_ suggestion: ModemDeckDialSuggestion) {
-        number = suggestion.phone.displayNumber
-        matchedContactID = suggestion.contact.id
-        matchedContactName = suggestion.contact.displayName
-        matchedNumber = suggestion.phone.displayNumber
-        preferredLineID = suggestion.contact.preferredLineId ?? ""
-        validationAttempted = false
-        if !lineSelectionOverridden { chooseDefaultLine(force: true) }
-        numberFocused = false
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-
     private func loadRecordingPreference() async {
+        guard !draft.recordingInitialized else { return }
         do {
             let settings = try await controller.api.recordingSettings()
-            recordingDefault = settings.defaultEnabled
-            recording = settings.defaultEnabled
-            recordingReady = true
+            if !draft.recordingInitialized { draft.recording = settings.defaultEnabled }
+            draft.recordingInitialized = true
             recordingError = ""
-        } catch {
-            recordingReady = false
-            recordingError = error.localizedDescription
-        }
+        } catch { recordingError = error.localizedDescription }
     }
-
     private func startCall() {
         validationAttempted = true
-        guard controller.isOnline, let line = selectedLine else { return }
+        guard canDial, let line = selectedLine else { return }
         let target = dialTarget
-        guard target.error == .none else { return }
-        let displayName = showsContactMatch ? matchedContactName : target.original
+        let displayName = matchedContact?.displayName ?? target.original
         Task {
-            await callController.start(
-                lineID: line.id,
-                number: target.original,
-                displayName: displayName,
-                recording: recordingReady ? recording : nil
-            )
-            if callController.errorMessage.isEmpty {
-                number = ""
-                matchedContactID = ""
-                matchedContactName = ""
-                matchedNumber = ""
-                preferredLineID = ""
-                validationAttempted = false
-                lineSelectionOverridden = false
-                recording = recordingDefault
-                chooseDefaultLine(force: true)
-            }
+            await callController.start(lineID: line.id, number: target.original, displayName: displayName,
+                                       recording: draft.recordingInitialized ? draft.recording : nil)
+            if callController.call != nil && callController.errorMessage.isEmpty { draft.clear() }
         }
     }
 }
@@ -829,9 +523,9 @@ struct ModemDeckCallsView: View {
     @Environment(\.modemDeckUsesSplitWorkspace) private var usesSplitWorkspace
     @Environment(\.modemDeckNavigate) private var navigate
     @State private var query = ""
-    @State private var statusFilter = "all"
     @State private var lineFilter = ""
     @State private var favoriteOnly = false
+    @State private var directionFilter = "all"
     @State private var selecting = false
     @State private var selectedIDs = Set<String>()
     @State private var selectedCallID: String?
@@ -845,22 +539,23 @@ struct ModemDeckCallsView: View {
 
     private var filteredCalls: [ModemDeckCallRecord] {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let callsWithRecordings = Set(store.recordings.map { $0.call.id })
         return store.calls.filter { call in
-            let matchesStatus = statusFilter == "all" ||
-                (statusFilter == "missed" && call.missed) ||
-                (statusFilter == "incoming" && call.direction == "incoming" && !call.missed) ||
-                (statusFilter == "outgoing" && call.direction == "outgoing")
+            let matchesStatus = controller.callsFilter == "all" ||
+                (controller.callsFilter == "missed" && call.missed) ||
+                (controller.callsFilter == "recorded" && callsWithRecordings.contains(call.id))
             let matchesQuery = normalized.isEmpty ||
                 displayName(for: call).localizedCaseInsensitiveContains(normalized) ||
                 call.remoteNumber.localizedCaseInsensitiveContains(normalized)
             return matchesStatus && matchesQuery &&
+                (directionFilter == "all" || call.direction == directionFilter) &&
                 (lineFilter.isEmpty || call.lineId == lineFilter) &&
                 (!favoriteOnly || call.favorite)
         }
     }
 
     private var recordedCallIDs: Set<String> {
-        Set(store.recordings.filter(\.playable).map { $0.call.id })
+        Set(store.recordings.map { $0.call.id })
     }
 
     private var selectedCall: ModemDeckCallRecord? {
@@ -901,8 +596,8 @@ struct ModemDeckCallsView: View {
         }
         .task { await store.load() }
         .onChange(of: filteredCalls.map(\.id)) { visibleIDs in
-            guard selecting else { return }
-            selectedIDs.formIntersection(Set(visibleIDs))
+            if let selectedCallID, !visibleIDs.contains(selectedCallID) { self.selectedCallID = nil }
+            if selecting { selectedIDs.formIntersection(Set(visibleIDs)) }
         }
         .alert(
             controller.text("删除所选通话？", "Delete Selected Calls?"),
@@ -922,8 +617,7 @@ struct ModemDeckCallsView: View {
 
     private var callListColumn: some View {
         VStack(spacing: 0) {
-            ModemDeckPageHeader(title: controller.text("通话", "Calls"))
-            toolbar
+            ModemDeckCollectionHeader(controller: controller, title: controller.text("通话", "Calls"), query: $query) {}
             filterBar
             callList
         }
@@ -955,47 +649,29 @@ struct ModemDeckCallsView: View {
         }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: ModemDeckLayout.toolbarGap) {
-            ModemDeckToolbarButton(
-                icon: selecting ? "xmark" : "checklist",
-                active: selecting,
-                accessibilityText: controller.text("选择通话", "Select calls")
-            ) {
-                selecting.toggle()
-                if !selecting { selectedIDs.removeAll() }
-            }
-            ModemDeckSearchField(
-                text: $query,
-                prompt: controller.text("搜索", "Search"),
-                clearAccessibilityText: controller.text("清除搜索", "Clear search")
-            )
-            ModemDeckLineFilterMenu(
-                controller: controller,
-                selection: $lineFilter,
-                accessibilityText: controller.text("筛选线路", "Filter line")
-            )
-        }
-        .modemDeckListToolbar()
-    }
-
     private var filterBar: some View {
         HStack(spacing: ModemDeckLayout.toolbarGap) {
             ModemDeckSegmentPicker(
                 options: [
                     .init(id: "all", title: controller.text("全部", "All")),
                     .init(id: "missed", title: controller.text("未接", "Missed")),
-                    .init(id: "incoming", title: controller.text("呼入", "Incoming")),
-                    .init(id: "outgoing", title: controller.text("呼出", "Outgoing"))
+                    .init(id: "recorded", title: controller.text("有录音", "Recorded"))
                 ],
-                selection: $statusFilter
+                selection: $controller.callsFilter, compact: true
             )
-            ModemDeckToolbarButton(
-                icon: favoriteOnly ? "star.fill" : "star",
-                active: favoriteOnly,
-                accessibilityText: controller.text("仅收藏", "Favorites only")
-            ) {
-                favoriteOnly.toggle()
+            ModemDeckCollectionFilters(controller: controller, line: $lineFilter, favoriteOnly: $favoriteOnly,
+                extraCount: directionFilter == "all" ? 0 : 1, clearExtra: { directionFilter = "all" }) {
+                Picker(controller.text("通话方向", "Direction"), selection: $directionFilter) {
+                    Text(controller.text("所有方向", "All directions")).tag("all")
+                    Text(controller.text("呼入", "Incoming")).tag("incoming")
+                    Text(controller.text("呼出", "Outgoing")).tag("outgoing")
+                }
+            }
+            ModemDeckCollectionMenu(controller: controller, selecting: $selecting, busy: batchBusy,
+                selectTitle: controller.text("选择通话", "Select calls"), clearSelection: { selectedIDs.removeAll() }) {
+                Button { navigate(.recordings) } label: {
+                    Label(controller.text("录音管理", "Manage recordings"), systemImage: "waveform")
+                }
             }
         }
         .modemDeckListFilterBar()
@@ -1031,13 +707,13 @@ struct ModemDeckCallsView: View {
                     callListRow(call)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
-                        .listRowBackground(Color.mdSurface)
+                        .listRowBackground(Color.mdBackground)
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 0)
-            .background(Color.mdSurface)
+            .background(Color.mdBackground)
             .refreshable { await store.load() }
         }
     }
@@ -1056,6 +732,7 @@ struct ModemDeckCallsView: View {
                     selectedCallID = call.id
                 } else { navigate(.call(call.id)) }
             },
+            beginSelection: { selecting = true; selectedIDs = [call.id] },
             toggleRead: call.missed ? { try await store.mutate(call.read ? .unread : .read, calls: [call]) } : nil,
             toggleFavorite: { try await store.mutate(call.favorite ? .unfavorite : .favorite, calls: [call]) },
             delete: { try await store.mutate(.delete, calls: [call]) }
@@ -1084,6 +761,12 @@ struct ModemDeckCallsView: View {
             selectAll: toggleAllCalls,
             done: endCallSelection
         ) {
+            if selected.count == 1, let call = selected.first {
+                ModemDeckBatchCopyMenu(controller: controller, items: [
+                    .init(label: controller.text("复制联系人", "Copy Contact"), value: displayName(for: call)),
+                    .init(label: controller.text("复制号码", "Copy Number"), value: call.remoteNumber)
+                ])
+            }
             if !missed.isEmpty {
                 ModemDeckBatchActionButton(
                     title: allMissedUnread
@@ -1177,7 +860,7 @@ struct ModemDeckCallRecordRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 11) {
+        HStack(alignment: .center, spacing: ModemDeckLayout.listAvatarTextSpacing) {
             ModemDeckCommunicationAvatar(
                 channel: .call,
                 name: displayName,
@@ -1243,6 +926,8 @@ struct ModemDeckCallRecordRow: View {
 
 struct ModemDeckRecordingsView: View {
     @ObservedObject var controller: ModemDeckSessionController
+    var showsBackButton = false
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var store: ModemDeckCallsStore
     @Environment(\.modemDeckUsesSplitWorkspace) private var usesSplitWorkspace
     @Environment(\.modemDeckNavigate) private var navigate
@@ -1255,8 +940,9 @@ struct ModemDeckRecordingsView: View {
     @State private var batchBusy = false
     @State private var confirmBatchDelete = false
 
-    init(controller: ModemDeckSessionController) {
+    init(controller: ModemDeckSessionController, showsBackButton: Bool = false) {
         self.controller = controller
+        self.showsBackButton = showsBackButton
         _store = StateObject(wrappedValue: controller.callsStore)
     }
 
@@ -1307,6 +993,7 @@ struct ModemDeckRecordingsView: View {
         }
         .background(Color.mdBackground)
         .navigationBarHidden(true)
+        .modemDeckInteractiveBack(showsBackButton)
         .overlay(alignment: .bottom) {
             ModemDeckInlineError(message: store.errorMessage)
                 .padding(.horizontal, 16)
@@ -1334,33 +1021,18 @@ struct ModemDeckRecordingsView: View {
 
     private var recordingListColumn: some View {
         VStack(spacing: 0) {
-            ModemDeckPageHeader(title: controller.text("录音", "Recordings"))
+            ModemDeckCollectionHeader(controller: controller, title: controller.text("录音管理", "Recordings"), query: $query,
+                backAction: showsBackButton ? { dismiss() } : nil,
+                backAccessibilityText: controller.text("返回通话", "Back to Calls")) {}
             HStack(spacing: ModemDeckLayout.toolbarGap) {
-                ModemDeckToolbarButton(
-                    icon: selecting ? "xmark" : "checklist",
-                    active: selecting,
-                    accessibilityText: controller.text("选择录音", "Select recordings")
-                ) {
-                    selecting.toggle()
-                    if !selecting { selectedIDs.removeAll() }
-                }
-                ModemDeckSearchField(
-                    text: $query,
-                    prompt: controller.text("搜索", "Search"),
-                    clearAccessibilityText: controller.text("清除搜索", "Clear search")
-                )
-                ModemDeckLineFilterMenu(
-                    controller: controller,
-                    selection: $lineFilter,
-                    accessibilityText: controller.text("筛选线路", "Filter line")
-                )
-                ModemDeckToolbarButton(
-                    icon: favoriteOnly ? "star.fill" : "star",
-                    active: favoriteOnly,
-                    accessibilityText: controller.text("仅收藏", "Favorites only")
-                ) { favoriteOnly.toggle() }
+                Text(controller.text("\(filteredRecordings.count) 条录音", "\(filteredRecordings.count) recordings"))
+                    .font(.subheadline).foregroundColor(.mdMuted)
+                Spacer(minLength: 0)
+                ModemDeckCollectionFilters(controller: controller, line: $lineFilter, favoriteOnly: $favoriteOnly) {}
+                ModemDeckCollectionMenu(controller: controller, selecting: $selecting, busy: batchBusy,
+                    selectTitle: controller.text("选择录音", "Select recordings"), clearSelection: { selectedIDs.removeAll() }) {}
             }
-            .modemDeckListToolbar(showsDivider: true)
+            .modemDeckListFilterBar()
 
             recordingList
         }
@@ -1420,13 +1092,13 @@ struct ModemDeckRecordingsView: View {
                     recordingListRow(recording)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
-                        .listRowBackground(Color.mdSurface)
+                        .listRowBackground(Color.mdBackground)
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 0)
-            .background(Color.mdSurface)
+            .background(Color.mdBackground)
             .refreshable { await store.load() }
         }
     }
@@ -1445,6 +1117,7 @@ struct ModemDeckRecordingsView: View {
                     selectedRecordingID = recording.id
                 } else { navigate(.recording(recording.id)) }
             },
+            beginSelection: { selecting = true; selectedIDs = [recording.id] },
             toggleFavorite: { try await store.mutate(recording.favorite ? .unfavorite : .favorite, recordings: [recording]) },
             delete: { try await store.mutate(.delete, recordings: [recording]) }
         ) { actions in
@@ -1470,6 +1143,12 @@ struct ModemDeckRecordingsView: View {
             selectAll: toggleAllRecordings,
             done: endRecordingSelection
         ) {
+            if selected.count == 1, let recording = selected.first {
+                ModemDeckBatchCopyMenu(controller: controller, items: [
+                    .init(label: controller.text("复制联系人", "Copy Contact"), value: displayName(for: recording)),
+                    .init(label: controller.text("复制号码", "Copy Number"), value: recording.call.remoteNumber)
+                ])
+            }
             ModemDeckBatchActionButton(
                 title: allFavorite
                     ? controller.text("取消收藏", "Unfavorite")
@@ -1552,7 +1231,7 @@ struct ModemDeckRecordingRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 11) {
+        HStack(alignment: .center, spacing: ModemDeckLayout.listAvatarTextSpacing) {
             ModemDeckCommunicationAvatar(
                 channel: .recording,
                 name: displayName,
@@ -1680,7 +1359,7 @@ private struct ModemDeckDetailAction: View {
     var body: some View {
         Label(title, systemImage: icon)
             .font(.system(size: 14, weight: .semibold))
-            .foregroundColor(prominent ? .white : .mdAccent)
+            .foregroundColor(prominent ? .mdOnAccent : .mdAccent)
             .frame(maxWidth: .infinity, minHeight: 44)
             .background(prominent ? Color.mdAccent : Color.mdSurface)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2144,11 +1823,11 @@ struct ModemDeckRecordingDetailView: View {
                                         .fill(recording.playable ? Color.mdAccent : Color.mdSurfaceHover)
                                         .frame(width: 50, height: 50)
                                     if player.loading {
-                                        ProgressView().tint(.white)
+                                        ProgressView().tint(.mdOnAccent)
                                     } else {
                                         Image(systemName: player.playing ? "pause.fill" : "play.fill")
                                             .font(.system(size: 19, weight: .bold))
-                                            .foregroundColor(recording.playable ? .white : .mdFaint)
+                                            .foregroundColor(recording.playable ? .mdOnAccent : .mdFaint)
                                             .offset(x: player.playing ? 0 : 1)
                                     }
                                 }
@@ -2336,10 +2015,64 @@ struct ModemDeckRecordingDetailView: View {
     }
 }
 
+struct ModemDeckMiniCallBar: View {
+    let call: ModemDeckPresentedCall
+    @ObservedObject var controller: ModemDeckSessionController
+    @ObservedObject var callController: ModemDeckCallController
+    let restore: () -> Void
+
+    private var canEnd: Bool {
+        if call.testCall || controller.bootstrap == nil { return true }
+        let line = controller.bootstrap?.lines.first { $0.id == call.lineID }
+        return call.state == "ringing" && call.direction == "incoming"
+            ? line?.capabilities?.rejectCall == true : line?.capabilities?.hangupCall == true
+    }
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: restore) {
+                HStack(spacing: 12) {
+                    Image(systemName: "phone.fill")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(call.displayName.isEmpty ? call.remoteNumber : call.displayName)
+                            .font(.subheadline.weight(.semibold)).lineLimit(1)
+                        if let value = call.activeAt, let date = ModemDeckDateText.date(value) {
+                            Text(date, style: .timer).font(.caption).monospacedDigit()
+                        } else {
+                            Text(controller.text("通话进行中", "Call in progress")).font(.caption)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                }
+                .padding(.horizontal, 14).frame(minHeight: 56)
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel(controller.text("恢复通话", "Return to call"))
+            .accessibilityValue(call.displayName.isEmpty ? call.remoteNumber : call.displayName)
+            .accessibilityIdentifier("call-restore")
+            Button { Task { await callController.end() } } label: {
+                Image(systemName: "phone.down.fill")
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color(red: 0.78, green: 0.18, blue: 0.24))
+                    .clipShape(Circle())
+            }
+            .disabled(!canEnd || callController.busy)
+            .accessibilityLabel(controller.text("挂断", "End call"))
+            .padding(.trailing, 8)
+        }
+        .buttonStyle(.plain).foregroundColor(.mdOnAccent)
+        .background(Color.mdAccent)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
 struct ModemDeckActiveCallView: View {
     let call: ModemDeckPresentedCall
     @ObservedObject var controller: ModemDeckSessionController
     @ObservedObject var callController: ModemDeckCallController
+
+    var collapse: () -> Void = {}
+    @GestureState private var collapseOffset: CGFloat = 0
 
     @State private var showingKeypad = false
     @State private var dtmfDigits = ""
@@ -2388,10 +2121,10 @@ struct ModemDeckActiveCallView: View {
                     callStage
                         .frame(width: panelWidth, height: panelHeight)
                         .background(callBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .stroke(Color.mdBorder, lineWidth: 0.5)
                         )
                         .shadow(color: Color.black.opacity(0.34), radius: 28, y: 12)
                 } else {
@@ -2416,25 +2149,49 @@ struct ModemDeckActiveCallView: View {
         }
     }
 
-    private var callBackground: some View {
-        LinearGradient(
-            colors: [Color(red: 0.04, green: 0.16, blue: 0.18), Color.black],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+    private var callBackground: some View { Color.mdSurface }
+
+    private var collapseHeader: some View {
+        HStack {
+            Text(controller.text("通话", "Call")).font(.headline)
+            Spacer()
+            Button(action: collapse) {
+                Image(systemName: "chevron.down").frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(controller.text("收起通话", "Collapse call"))
+            .accessibilityIdentifier("call-collapse")
+        }
+        .foregroundColor(.mdText)
+        .padding(.top, 14)
+        .overlay(alignment: .top) {
+            Capsule().fill(Color.mdBorder).frame(width: 34, height: 4).padding(.top, 4)
+        }
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 8)
+            .updating($collapseOffset) { value, offset, _ in
+                if abs(value.translation.height) > abs(value.translation.width) {
+                    offset = max(0, value.translation.height)
+                }
+            }
+            .onEnded { value in
+                guard value.translation.height > abs(value.translation.width) else { return }
+                if value.translation.height > 100 || value.predictedEndTranslation.height > 220 { collapse() }
+            })
     }
 
     private var callStage: some View {
         VStack(spacing: 0) {
+                collapseHeader
                 Spacer(minLength: showingKeypad ? 24 : 48)
                 if !showingKeypad {
                     Image(systemName: call.testCall ? "checkmark.shield.fill" : "person.crop.circle.fill")
                         .font(.system(size: 92))
-                        .foregroundColor(.white.opacity(0.92))
+                        .foregroundColor(.mdText)
                 }
                 Text(call.displayName.isEmpty ? call.remoteNumber : call.displayName)
                     .font(.system(size: showingKeypad ? 20 : 32, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.mdText)
                     .multilineTextAlignment(.center)
                     .padding(.top, showingKeypad ? 0 : 22)
                 if !showingKeypad,
@@ -2442,12 +2199,12 @@ struct ModemDeckActiveCallView: View {
                    !call.remoteNumber.isEmpty {
                     Text(call.remoteNumber)
                         .font(.title3)
-                        .foregroundColor(.white.opacity(0.68))
+                        .foregroundColor(.mdMuted)
                         .padding(.top, 5)
                 }
                 Text(stateText)
                     .font(.subheadline.weight(.medium))
-                    .foregroundColor(.white.opacity(0.72))
+                    .foregroundColor(.mdMuted)
                     .padding(.top, 10)
 
                 Spacer()
@@ -2457,7 +2214,6 @@ struct ModemDeckActiveCallView: View {
                         pressedDigits: dtmfDigits,
                         action: sendDTMF
                     )
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 } else if isActive {
                     ModemDeckCallControl(
                         title: call.muted
@@ -2472,7 +2228,7 @@ struct ModemDeckActiveCallView: View {
                 }
 
                 ModemDeckInlineError(message: callController.errorMessage)
-                    .foregroundColor(.white)
+                    .foregroundColor(.mdText)
                     .padding(.horizontal)
 
                 callFooter
@@ -2481,6 +2237,9 @@ struct ModemDeckActiveCallView: View {
             }
             .frame(maxWidth: 640)
             .padding(.horizontal, 24)
+            .offset(y: collapseOffset)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: collapseOffset == 0)
+            .accessibilityAction(.escape, collapse)
     }
 
     @ViewBuilder
@@ -2490,7 +2249,7 @@ struct ModemDeckActiveCallView: View {
                 ModemDeckCallFooterAction(
                     title: recordingTitle,
                     icon: callController.recordingEnabled ? "stop.fill" : "circle.fill",
-                    color: callController.recordingEnabled ? .red : .white.opacity(0.16),
+                    color: callController.recordingEnabled ? .red : .mdSurfaceHover,
                     selected: callController.recordingEnabled,
                     disabled: !callController.recordingReady ||
                         callController.recordingBusy ||
@@ -2537,7 +2296,7 @@ struct ModemDeckActiveCallView: View {
                             ? controller.text("隐藏键盘", "Hide Keypad")
                             : controller.text("键盘", "Keypad"),
                         icon: "circle.grid.3x3.fill",
-                        color: showingKeypad ? .mdAccent : .white.opacity(0.16),
+                        color: showingKeypad ? .mdAccent : .mdSurfaceHover,
                         selected: showingKeypad,
                         disabled: !canSendDTMF
                     ) {
@@ -2608,13 +2367,13 @@ private struct ModemDeckCallControl: View {
             VStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.title2)
-                    .foregroundColor(.white)
+                    .foregroundColor(.mdText)
                     .frame(width: 62, height: 62)
-                    .background(selected ? selectedColor : Color.white.opacity(0.16))
+                    .background(selected ? selectedColor.opacity(0.18) : Color.mdSurfaceHover)
                     .clipShape(Circle())
                 Text(title)
                     .font(.caption)
-                    .foregroundColor(.white)
+                    .foregroundColor(.mdText)
             }
         }
         .buttonStyle(.plain)
@@ -2651,13 +2410,13 @@ private struct ModemDeckCallFooterAction: View {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: primary ? 23 : 20, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(primary ? .white : (selected ? .mdOnAccent : .mdText))
                     .frame(width: primary ? 62 : 48, height: primary ? 62 : 48)
                     .background(color)
                     .clipShape(Circle())
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(selected ? color : .white.opacity(0.74))
+                    .foregroundColor(selected ? .mdAccent : .mdMuted)
                     .lineLimit(1)
             }
             .frame(width: 62)
@@ -2684,7 +2443,7 @@ private struct ModemDeckInCallKeypad: View {
             Text(pressedDigits)
                 .font(.system(size: 24, weight: .semibold, design: .rounded))
                 .monospacedDigit()
-                .foregroundColor(.white)
+                .foregroundColor(.mdText)
                 .lineLimit(1)
                 .frame(width: 238, height: 34)
                 .accessibilityLabel("Pressed keys")
@@ -2706,7 +2465,7 @@ private struct ModemDeckInCallKeypad: View {
                                     .tracking(key.0 == "0" ? 0 : 1.1)
                             }
                         }
-                        .foregroundColor(.white)
+                        .foregroundColor(.mdText)
                     }
                     .buttonStyle(ModemDeckInCallKeyStyle())
                     .accessibilityLabel(key.1.isEmpty ? key.0 : "\(key.0) \(key.1)")
@@ -2725,8 +2484,8 @@ private struct ModemDeckInCallKeyStyle: ButtonStyle {
             .frame(width: 62, height: 62)
             .background(
                 configuration.isPressed
-                    ? Color.white.opacity(0.28)
-                    : Color.white.opacity(0.15)
+                    ? Color.mdSelected
+                    : Color.mdSurfaceHover
             )
             .clipShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.9 : 1)

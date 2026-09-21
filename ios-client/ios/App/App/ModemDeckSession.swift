@@ -36,7 +36,14 @@ final class ModemDeckSessionController: ObservableObject {
     @Published private(set) var microphoneStatus = "unknown"
     @Published var errorMessage = ""
     @Published var pairingInProgress = false
-    @Published var selectedSection: ModemDeckSection
+    @Published var selectedSection: ModemDeckSection {
+        didSet {
+            if selectedSection != oldValue { listInteractionRevision &+= 1 }
+        }
+    }
+    @Published private(set) var listInteractionRevision = 0
+    @Published var callsFilter = "all"
+    @Published private(set) var callsNavigationRevision = 0
     @Published private(set) var requestedMessageThreadKey: String?
     @Published private(set) var connectionState: ModemDeckConnectionState = .checking
     @Published private(set) var reconnecting = false
@@ -44,6 +51,7 @@ final class ModemDeckSessionController: ObservableObject {
     let credentialStore: ModemDeckCredentialStore
     let api: ModemDeckAPIClient
     let callController: ModemDeckCallController
+    let dialDraft = ModemDeckDialDraft()
     let contactsStore: ModemDeckContactsStore
     let messagesStore: ModemDeckMessagesStore
     let callsStore: ModemDeckCallsStore
@@ -60,7 +68,8 @@ final class ModemDeckSessionController: ObservableObject {
     init(credentialStore: ModemDeckCredentialStore) {
         self.credentialStore = credentialStore
         let initialSection = ModemDeckSection.initialSection
-        selectedSection = initialSection == .dial ? .home : initialSection
+        selectedSection = initialSection == .dial ? .home : (initialSection == .recordings ? .calls : initialSection)
+        callsFilter = initialSection == .recordings ? "recorded" : "all"
         let api = ModemDeckAPIClient(credentialStore: credentialStore)
         self.api = api
         callController = ModemDeckCallController(api: api)
@@ -131,17 +140,23 @@ final class ModemDeckSessionController: ObservableObject {
 
     func start() async {
         do {
-            guard try credentialStore.load() != nil else {
+            guard let credential = try credentialStore.load() else {
                 phase = .unpaired
                 connectionState = .offline
                 await refreshNotificationStatus()
                 return
             }
             ModemDeckPushCoordinator.shared.configure(store: credentialStore)
-            session = api.cachedMobileSession()
-            bootstrap = api.cachedBootstrap()
             phase = .paired
             connectionState = .checking
+            let cached = await api.cachedStartupData()
+            guard phase == .paired, let current = try credentialStore.load(),
+                  current.serverURL == credential.serverURL, current.token == credential.token else { return }
+            session = cached.session
+            bootstrap = cached.bootstrap
+            contactsStore.restore(cached.contacts)
+            messagesStore.restore(threads: cached.threads, unread: cached.unread)
+            callsStore.restore(calls: cached.calls, recordings: cached.recordings)
             recovery.enable()
             await refresh()
         } catch {
@@ -199,6 +214,9 @@ final class ModemDeckSessionController: ObservableObject {
             bootstrap = values.1
             errorMessage = ""
             phase = .paired
+            // Session and capabilities authorize controls. History pagination is
+            // background work, not a prerequisite for interacting with the app.
+            if transportFailureRevision == failuresBeforeCheck { connectionState = .online }
             await refreshCollections()
             guard generation == refreshGeneration, !Task.isCancelled else { return .stop }
             if transportFailureRevision == failuresBeforeCheck { connectionState = .online }
@@ -257,6 +275,12 @@ final class ModemDeckSessionController: ObservableObject {
             connectionState = .offline
             phase = .unpaired
         }
+    }
+
+    func openCalls(filter: String = "all") {
+        callsFilter = ["all", "missed", "recorded"].contains(filter) ? filter : "all"
+        callsNavigationRevision += 1
+        selectedSection = .calls
     }
 
     func disconnect() async {
@@ -388,6 +412,8 @@ final class ModemDeckSessionController: ObservableObject {
 
     private func resetAfterRevocation() async {
         refreshGeneration &+= 1
+        dialDraft.clear()
+        callsFilter = "all"
         recovery.stop()
         reconnecting = false
         contactsStore.clear()
@@ -807,7 +833,11 @@ final class ModemDeckContactsStore: ObservableObject {
 
     init(api: ModemDeckAPIClient) {
         self.api = api
-        contacts = api.cachedContacts()
+    }
+
+    func restore(_ cached: [ModemDeckContact]) {
+        guard revision == 0 else { return }
+        contacts = cached
     }
 
     func load() async {
@@ -835,6 +865,7 @@ final class ModemDeckContactsStore: ObservableObject {
                     reloadRequested = true
                     continue
                 }
+                self.revision += 1
                 contacts = next
                 errorMessage = ""
             } catch {
@@ -892,7 +923,7 @@ final class ModemDeckMessageDraft: ObservableObject {
 final class ModemDeckMessagesStore: ObservableObject {
     @Published private(set) var threads: [ModemDeckMessageThread] = []
     @Published private(set) var contacts: [ModemDeckContact] = []
-    @Published private(set) var unreadSummary: ModemDeckUnreadSummary
+    @Published private(set) var unreadSummary: ModemDeckUnreadSummary = .empty
     @Published private(set) var loading = false
     @Published var errorMessage = ""
 
@@ -914,9 +945,13 @@ final class ModemDeckMessagesStore: ObservableObject {
     init(api: ModemDeckAPIClient, contactsStore: ModemDeckContactsStore) {
         self.api = api
         self.contactsStore = contactsStore
-        threads = api.cachedMessageThreads()
-        unreadSummary = api.cachedUnreadSummary()
         contactsStore.$contacts.assign(to: &$contacts)
+    }
+
+    func restore(threads: [ModemDeckMessageThread], unread: ModemDeckUnreadSummary) {
+        guard revision == 0 else { return }
+        self.threads = threads
+        unreadSummary = unread
         updateSystemBadge(unreadSummary.badgeCount)
     }
 
@@ -946,6 +981,7 @@ final class ModemDeckMessagesStore: ObservableObject {
                     reloadRequested = true
                     continue
                 }
+                self.revision += 1
                 threads = next
                 if let summary { apply(summary) }
                 errorMessage = ""
@@ -1222,9 +1258,13 @@ final class ModemDeckCallsStore: ObservableObject {
     init(api: ModemDeckAPIClient, contactsStore: ModemDeckContactsStore) {
         self.api = api
         self.contactsStore = contactsStore
-        calls = api.cachedCalls()
-        recordings = api.cachedRecordings()
         contactsStore.$contacts.assign(to: &$contacts)
+    }
+
+    func restore(calls: [ModemDeckCallRecord], recordings: [ModemDeckRecording]) {
+        guard revision == 0 else { return }
+        self.calls = calls
+        self.recordings = recordings
     }
 
     func load() async {
@@ -1255,6 +1295,7 @@ final class ModemDeckCallsStore: ObservableObject {
                     reloadRequested = true
                     continue
                 }
+                self.revision += 1
                 calls = values.0
                 recordings = values.1
                 errorMessage = ""

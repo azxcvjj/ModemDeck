@@ -25,7 +25,7 @@ async function verify(template, declarations) {
     const binary = path.join(directory, 'test')
     await writeFile(file, stubs.replace('// INSERT_PRODUCT_METHODS', declarations.join('\n')))
     const compiled = spawnSync('xcrun', ['swiftc', '-parse-as-library', file, '-o', binary], {
-      env: { ...process.env, DEVELOPER_DIR: '/Applications/Xcode-beta.app/Contents/Developer' }, encoding: 'utf8'
+      env: { ...process.env, DEVELOPER_DIR: process.env.DEVELOPER_DIR || '/Applications/Xcode-beta.app/Contents/Developer' }, encoding: 'utf8'
     })
     assert.equal(compiled.status, 0, compiled.stderr)
     const result = spawnSync(binary, [], { encoding: 'utf8' })
@@ -43,4 +43,18 @@ test('native conversation refresh removes deleted cache entries and send complet
   const source = await readFile(new URL('../ios/App/App/ModemDeckSession.swift', import.meta.url), 'utf8')
   await verify('conversation-stubs.swift', ['final class ModemDeckConversationStore:', 'final class ModemDeckMessageDraft:']
     .map(marker => '@MainActor\n' + declaration(source, marker)))
+})
+
+test('activity snapshot preserves all historical rows, date ordering and stable identities', { skip: process.platform !== 'darwin' }, async () => {
+  const source = await readFile(new URL('../ios/App/App/ModemDeckHomeView.swift', import.meta.url), 'utf8')
+  await verify('activity-stubs.swift', ['private enum ModemDeckActivityItem:',
+    'private struct ModemDeckActivitySource:', 'private struct ModemDeckActivityDay:',
+    'private struct ModemDeckActivitySnapshot'].map(marker => declaration(source, marker)))
+})
+
+
+test('conversation read receipts cover historical imports without acknowledging later arrivals', { skip: process.platform !== 'darwin' }, async () => {
+  const source = await readFile(new URL('../ios/App/App/ModemDeckCommunicationViews.swift', import.meta.url), 'utf8')
+  await verify('message-read-stubs.swift', ['private var readThroughMessageID:', 'private var newestIncomingMessageID:']
+    .map(marker => declaration(source, marker).replace('private var', 'var')))
 })

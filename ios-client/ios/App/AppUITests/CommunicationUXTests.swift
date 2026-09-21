@@ -22,7 +22,7 @@ final class CommunicationUXTests: XCTestCase {
         return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 
-    private func launch(configuration: [String: Any] = [:]) async throws -> XCUIApplication {
+    private func launch(configuration: [String: Any] = [:], callSurface: Bool = false, waitForActivity: Bool = true) async throws -> XCUIApplication {
         continueAfterFailure = false
         _ = try await fixture("/__uat/reset", body: [:])
         if !configuration.isEmpty {
@@ -34,9 +34,71 @@ final class CommunicationUXTests: XCTestCase {
             "MODEMDECK_UAT_MODE": "1", "MODEMDECK_UAT_SERVER_URL": server,
             "MODEMDECK_UAT_TOKEN": token, "MODEMDECK_UAT_INITIAL_SECTION": "home"
         ]
+        if callSurface { app.launchEnvironment["MODEMDECK_UAT_CALL_STATE"] = "active" }
         app.launch()
-        XCTAssertTrue(app.buttons["activity-message-\(threadID)"].waitForExistence(timeout: 20))
+        if !callSurface && waitForActivity { XCTAssertTrue(app.buttons["activity-message-\(threadID)"].waitForExistence(timeout: 20)) }
         return app
+    }
+
+    func testSlowHistorySyncDoesNotDisableControls() async throws {
+        let app = try await launch(configuration: ["historyDelayMS": 30000], waitForActivity: false)
+        XCTAssertTrue(app.buttons["section-messages"].waitForExistence(timeout: 5))
+        app.buttons["section-messages"].tap()
+        let compose = app.buttons["新建短信"]
+        XCTAssertTrue(compose.waitForExistence(timeout: 5))
+        let ready = NSPredicate { _, _ in compose.isEnabled }
+        await fulfillment(of: [XCTNSPredicateExpectation(predicate: ready, object: compose)], timeout: 5)
+        let state = try await fixture("/__uat/state")
+        XCTAssertGreaterThan(state["historyReadsStarted"] as? Int ?? 0, 0)
+        XCTAssertEqual(state["historyReadsCompleted"] as? Int, 0, "Controls must be usable before slow history completes")
+        compose.tap()
+        XCTAssertTrue(app.textFields["电话号码"].waitForExistence(timeout: 3))
+        capture("startup-during-history-sync", app: app)
+    }
+
+    func testLargeCachedHistoryKeepsLaunchAndTabsResponsive() async throws {
+        let app = try await launch(configuration: ["largeHistory": true])
+        let loaded = NSPredicate { _, _ in app.buttons["recent-calls-all"].label.contains("3,002") || app.buttons["recent-calls-all"].label.contains("3002") }
+        await fulfillment(of: [XCTNSPredicateExpectation(predicate: loaded, object: app)], timeout: 20)
+        // Relaunch with thousands of cached rows across 900 days, then exercise
+        // both fresh-cache rendering and a tab switch rather than timing a splash.
+        app.terminate()
+        let started = Date()
+        app.launch()
+        XCTAssertTrue(app.buttons["section-settings"].waitForExistence(timeout: 5))
+        app.buttons["section-settings"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "偏好设置")).firstMatch.waitForExistence(timeout: 3))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "Cached history must not monopolize the UI thread at launch")
+        app.buttons["section-home"].tap()
+        XCTAssertTrue(app.buttons["activity-message-\(threadID)"].waitForExistence(timeout: 5))
+        capture("startup-large-cached-history", app: app)
+    }
+
+    func testSwitchingTabsClosesLeadingAndTrailingSwipeActions() async throws {
+        let app = try await launch()
+        for section in ["home", "messages", "calls", "contacts"] {
+            app.buttons["section-" + section].tap()
+            let id = ["home": "activity-message-\(threadID)", "messages": "message-\(threadID)",
+                      "calls": "call-uat-call-missed", "contacts": "contact-uat-contact-example"][section]!
+            let row = app.buttons[id]
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            let restingY = row.frame.minY
+            row.swipeLeft()
+            XCTAssertTrue(app.buttons["删除"].waitForExistence(timeout: 3))
+            app.buttons["section-settings"].tap()
+            app.buttons["section-" + section].tap()
+            XCTAssertFalse(app.buttons["删除"].exists, "\(section) retained its trailing swipe")
+            XCTAssertEqual(row.frame.minY, restingY, accuracy: 2, "Switching tabs must retain the list position")
+            if section != "contacts" {
+                let start = row.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+                let end = row.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
+                start.press(forDuration: 0.05, thenDragTo: end)
+                XCTAssertTrue(app.buttons["标为已读"].waitForExistence(timeout: 3))
+                app.buttons["section-settings"].tap()
+                app.buttons["section-" + section].tap()
+                XCTAssertFalse(app.buttons["标为已读"].exists, "\(section) retained its leading swipe")
+            }
+        }
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
@@ -48,6 +110,174 @@ final class CommunicationUXTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testCompactCollectionHeadersKeepSearchAndFiltersUsable() async throws {
+        let app = try await launch()
+        func appearance(_ value: String) {
+            app.buttons["section-settings"].tap()
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "偏好设置")).firstMatch.tap()
+            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "显示模式")).firstMatch.tap()
+            app.buttons[value].tap()
+        }
+        appearance("浅色")
+        app.buttons["section-messages"].tap()
+        let row = app.buttons["message-\(threadID)"]
+        let service = app.buttons["message-uat-line-a:UAT-SERVICE"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let searchButton = app.buttons["collection-search-open"]
+        let filters = app.buttons["collection-filters"]
+        XCTAssertLessThanOrEqual(row.frame.minY - searchButton.frame.minY, 110)
+        XCTAssertFalse(app.textFields["搜索"].exists, "The default header must not reserve a search row")
+        capture("compact-messages-light", app: app)
+        app.buttons["未读"].tap()
+        filters.tap()
+        app.buttons["仅收藏"].tap()
+        XCTAssertTrue((filters.value as? String)?.contains("1") == true)
+        filters.tap()
+        if !app.buttons["Line A"].exists { app.buttons["线路"].tap() }
+        app.buttons["Line A"].tap()
+        XCTAssertTrue((filters.value as? String)?.contains("2") == true)
+        searchButton.tap()
+        let query = app.textFields["搜索"]
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3), "Search should focus in one tap")
+        query.typeText("示例")
+        XCTAssertTrue(row.exists)
+        XCTAssertFalse(service.exists)
+        capture("compact-messages-search", app: app)
+        app.buttons["section-contacts"].tap()
+        let contact = app.buttons["contact-uat-contact-example"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(contact.frame.minY - searchButton.frame.minY, 62)
+        XCTAssertTrue(app.buttons["新建联系人"].isHittable)
+        capture("compact-contacts-light", app: app)
+        app.buttons["section-messages"].tap()
+        XCTAssertEqual(query.value as? String, "示例")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Returning to the tab must not reopen the keyboard")
+        app.buttons["collection-search-cancel"].tap()
+        XCTAssertTrue(app.buttons["未读"].isSelected)
+        XCTAssertTrue((filters.value as? String)?.contains("2") == true)
+        filters.tap()
+        app.buttons["清除筛选"].tap()
+        XCTAssertFalse(filters.isSelected)
+        app.buttons["全部"].tap()
+        XCTAssertTrue(service.waitForExistence(timeout: 3))
+        app.buttons["section-calls"].tap()
+        let call = app.buttons["call-uat-call-example"]
+        XCTAssertTrue(call.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(call.frame.minY - searchButton.frame.minY, 110)
+        app.buttons["有录音"].tap()
+        XCTAssertTrue(call.exists)
+        XCTAssertFalse(app.buttons["call-uat-call-missed"].exists)
+        capture("compact-calls-light", app: app)
+        app.buttons["更多操作"].tap()
+        app.buttons["录音管理"].tap()
+        XCTAssertTrue(app.buttons["recording-uat-recording-example"].waitForExistence(timeout: 4))
+        XCTAssertTrue(searchButton.isHittable)
+        capture("compact-recordings-light", app: app)
+        app.buttons["返回通话"].tap()
+        // The settings tab retains its detail navigation between visits.
+        app.buttons["section-settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "显示模式")).firstMatch.tap()
+        app.buttons["深色"].tap()
+        app.buttons["section-messages"].tap()
+        capture("compact-messages-dark", app: app)
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            XCTAssertTrue(row.waitForExistence(timeout: 4))
+            capture("compact-messages-ipad-landscape", app: app)
+        }
+    }
+
+    private func backgroundBrightness(app: XCUIApplication) -> Double {
+        let screenshot = app.screenshot().image.cgImage!
+        let area = CGRect(x: CGFloat(screenshot.width) * 0.015, y: CGFloat(screenshot.height) * 0.7, width: 4, height: 4)
+        let sample = screenshot.cropping(to: area)!
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return Double(Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2])) / (3 * 255)
+    }
+
+    func testRefreshDesignFiltersAndDialerDraft() async throws {
+        let app = try await launch()
+        XCTAssertFalse(app.buttons["section-recordings"].exists)
+        capture("refresh-recents-light", app: app)
+        app.buttons["recent-calls-recorded"].tap()
+        let recorded = app.buttons["call-uat-call-example"]
+        let missed = app.buttons["call-uat-call-missed"]
+        XCTAssertTrue(recorded.waitForExistence(timeout: 5))
+        XCTAssertFalse(missed.exists)
+        capture("refresh-calls-recorded", app: app)
+        app.buttons["未接"].tap()
+        XCTAssertTrue(missed.waitForExistence(timeout: 3))
+        XCTAssertFalse(recorded.exists)
+        app.buttons["全部"].tap()
+        XCTAssertTrue(recorded.exists && missed.exists)
+        // A quick horizontal swipe must expose row actions, not start selection.
+        recorded.swipeLeft()
+        XCTAssertTrue(app.buttons["删除"].waitForExistence(timeout: 3))
+        recorded.swipeRight()
+        recorded.press(forDuration: 0.65)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        app.buttons["复制"].tap()
+        XCTAssertTrue(app.buttons["复制号码"].waitForExistence(timeout: 3))
+        app.buttons["复制号码"].tap()
+        capture("refresh-calls-selection", app: app)
+        app.buttons["完成"].tap()
+        app.buttons["更多操作"].tap()
+        app.buttons["录音管理"].tap()
+        XCTAssertTrue(app.buttons["recording-uat-recording-example"].waitForExistence(timeout: 4))
+        app.buttons["返回通话"].tap()
+        app.buttons["打开拨号盘"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["dial-key-1"].waitForExistence(timeout: 3))
+        for key in ["1", "2", "0", "2", "5", "5", "5", "0", "1", "0", "1"] { app.buttons["dial-key-" + key].tap() }
+        let number = app.textFields["dial-number"]
+        XCTAssertEqual(number.value as? String, "12025550101")
+        capture("refresh-dialer-draft", app: app)
+        app.buttons["dialer-collapse"].tap()
+        app.buttons["section-messages"].tap()
+        app.buttons["打开拨号盘"].firstMatch.tap()
+        XCTAssertTrue(number.waitForExistence(timeout: 3))
+        XCTAssertEqual(number.value as? String, "12025550101")
+        app.buttons["dial-delete"].tap()
+        XCTAssertEqual(number.value as? String, "1202555010")
+        app.buttons["dialer-collapse"].tap()
+        app.buttons["section-settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "偏好设置")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "显示模式")).firstMatch.tap()
+        app.buttons["深色"].tap()
+        capture("refresh-settings-dark", app: app)
+        app.buttons["section-messages"].tap()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertLessThan(backgroundBrightness(app: app), 0.3, "The shell must actually adopt the selected dark appearance")
+        capture("refresh-messages-dark", app: app)
+        app.buttons["section-contacts"].tap()
+        capture("refresh-contacts-dark", app: app)
+        app.buttons["section-calls"].tap()
+        capture("refresh-calls-dark", app: app)
+        app.buttons["section-home"].tap()
+        capture("refresh-recents-dark", app: app)
+        app.buttons["打开拨号盘"].firstMatch.tap()
+        capture("refresh-dialer-dark", app: app)
+    }
+
+    func testActiveCallCanCollapseAndRestoreWithoutLosingKeypad() async throws {
+        let app = try await launch(callSurface: true)
+        XCTAssertTrue(app.buttons["call-collapse"].waitForExistence(timeout: 12))
+        app.buttons["键盘"].tap()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        capture("refresh-active-call-keypad", app: app)
+        app.buttons["call-collapse"].tap()
+        XCTAssertTrue(app.buttons["call-restore"].waitForExistence(timeout: 4))
+        app.buttons["section-messages"].tap()
+        XCTAssertTrue(app.buttons["message-\(threadID)"].waitForExistence(timeout: 6))
+        capture("refresh-mini-call", app: app)
+        app.buttons["call-restore"].tap()
+        XCTAssertTrue(app.buttons["隐藏键盘"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["call-collapse"].exists)
     }
 
     func testRotationPreservesConversationAndDraft() async throws {
@@ -101,8 +331,8 @@ final class CommunicationUXTests: XCTestCase {
         let original = app.buttons["contact-uat-contact-example"]
         let other = app.buttons["contact-uat-contact-second"]
         XCTAssertTrue(original.waitForExistence(timeout: 6))
-        app.buttons["选择联系人"].tap()
-        original.tap()
+        original.press(forDuration: 0.65)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
         app.buttons["删除"].tap()
         app.alerts.buttons["删除"].tap()
         var started = false
@@ -114,6 +344,9 @@ final class CommunicationUXTests: XCTestCase {
         XCTAssertTrue(started)
         XCTAssertFalse(original.isEnabled)
         XCTAssertFalse(other.isEnabled, "Selection must be frozen during the submitted deletion")
+        app.buttons["section-settings"].tap()
+        app.buttons["section-contacts"].tap()
+        XCTAssertFalse(other.isEnabled, "Tab switches must not reset an in-flight batch operation")
         let gone = NSPredicate(format: "exists == false")
         await fulfillment(of: [XCTNSPredicateExpectation(predicate: gone, object: original)], timeout: 12)
         XCTAssertTrue(other.exists)
@@ -162,10 +395,10 @@ final class CommunicationUXTests: XCTestCase {
         app.buttons["section-messages"].tap()
         let messageRow = app.buttons["message-\(threadID)"]
         XCTAssertTrue(messageRow.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields.firstMatch.exists, "Search remains available in Messages")
+        XCTAssertTrue(app.buttons["collection-search-open"].exists, "Search remains available in Messages")
         XCTAssertFalse((messageRow.value as? String)?.contains("已收藏") == true)
-        app.buttons["选择消息"].tap()
-        messageRow.tap()
+        messageRow.press(forDuration: 0.65)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
         app.buttons["message-uat-line-a:UAT-SERVICE"].tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
         XCTAssertTrue(app.buttons["标为已读"].exists, "Mixed read state defaults to Mark Read")
@@ -181,12 +414,16 @@ final class CommunicationUXTests: XCTestCase {
     }
 
     func testMessageConversationStartsAtUnreadAndAcknowledgesSnapshot() async throws {
-        let app = try await launch()
+        let app = try await launch(configuration: ["firstUnreadMessageID": 8])
         app.buttons["section-messages"].tap()
         let row = app.buttons["message-\(threadID)"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
         XCTAssertTrue(app.staticTexts["未读消息"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["未读消息"].isHittable, "The first unread marker must be visible without scrolling")
+        XCTAssertTrue(app.staticTexts["历史 UAT 消息 8"].isHittable)
+        XCTAssertLessThan(app.staticTexts["未读消息"].frame.minY - app.scrollViews.firstMatch.frame.minY, 40,
+                          "The unread target must be aligned near the top of the conversation")
         capture("message-unread-anchor-and-day-groups", app: app)
 
         let conversation = app.scrollViews.firstMatch
@@ -209,6 +446,101 @@ final class CommunicationUXTests: XCTestCase {
             if readOperation == nil { try await Task.sleep(nanoseconds: 250_000_000) }
         }
         XCTAssertEqual(readOperation?["through_message_id"] as? Int, 30)
+    }
+
+    func testMessageSwipeBackAfterSwitchingTabs() async throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone)
+        guard #available(iOS 26.0, *) else {
+            throw XCTSkip("Full-content interactive back requires iOS 26; edge back is covered separately")
+        }
+        let app = try await launch()
+        app.buttons["section-messages"].tap()
+        let row = app.buttons["message-\(threadID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        let back = app.buttons["返回消息"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let conversation = app.scrollViews.firstMatch
+        let leftStart = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.45))
+        let leftEnd = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.45))
+        leftStart.press(forDuration: 0.05, thenDragTo: leftEnd)
+        XCTAssertTrue(back.exists, "Timestamp reveal must keep the conversation open")
+
+        let contentStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.45))
+        let contentEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.45))
+        let cancelledEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.45))
+        let restingBackX = back.frame.minX
+        contentStart.press(forDuration: 0.05, thenDragTo: cancelledEnd, withVelocity: .slow, thenHoldForDuration: 0.4)
+        XCTAssertTrue(back.exists, "Cancelling an interactive swipe must retain the conversation")
+        let settled = NSPredicate { _, _ in abs(back.frame.minX - restingBackX) < 1 }
+        await fulfillment(of: [XCTNSPredicateExpectation(predicate: settled, object: back)], timeout: 3)
+        contentStart.press(forDuration: 0.05, thenDragTo: contentEnd)
+        let gone = NSPredicate(format: "exists == false")
+        await fulfillment(of: [XCTNSPredicateExpectation(predicate: gone, object: back)], timeout: 5)
+        guard !back.exists else { return }
+        XCTAssertTrue(row.isHittable, "Right swipe must return to the message list")
+
+        row.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        app.buttons["section-home"].tap()
+        app.buttons["section-messages"].tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let edgeStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.45))
+        edgeStart.press(forDuration: 0.05, thenDragTo: contentEnd)
+        await fulfillment(of: [XCTNSPredicateExpectation(predicate: gone, object: back)], timeout: 5)
+        XCTAssertTrue(row.isHittable, "Edge back must survive a retained tab disappearing and reappearing")
+        capture("messages-swipe-back-and-tab-reentry", app: app)
+    }
+
+    func testCachedConversationKeepsItsInitialPositionDuringRefresh() async throws {
+        let app = try await launch(configuration: ["messagesRead": true])
+        app.buttons["section-messages"].tap()
+        let row = app.buttons["message-\(threadID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let search = app.buttons["collection-search-open"]
+        XCTAssertTrue(search.exists)
+        let listFrame = search.frame
+        row.tap()
+        let latest = app.staticTexts["第 3 条未读 UAT 消息。"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        XCTAssertTrue(latest.isHittable, "A read conversation must initially show its latest message")
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            app.buttons["section-home"].tap()
+            app.buttons["section-messages"].tap()
+        } else {
+            app.buttons["返回消息"].tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            XCTAssertEqual(search.frame.minY, listFrame.minY, accuracy: 1)
+        }
+        _ = try await fixture("/__uat/configure", body: ["messageReadDelayMS": 4000])
+        let state = try await fixture("/__uat/state")
+        let before = state["messageReadsCompleted"] as? Int ?? 0
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            app.buttons["section-home"].tap()
+            app.buttons["section-messages"].tap()
+        } else {
+            row.tap()
+        }
+        XCTAssertTrue(latest.waitForExistence(timeout: 2))
+        XCTAssertTrue(latest.isHittable, "Cached history must open at the same target before the request finishes")
+        let initialFrame = latest.frame
+        let pending = try await fixture("/__uat/state")
+        XCTAssertEqual(pending["messageReadsCompleted"] as? Int, before, "Capture must precede the delayed response")
+        var refreshed = false
+        for _ in 0..<50 where !refreshed {
+            let state = try await fixture("/__uat/state")
+            refreshed = (state["messageReadsCompleted"] as? Int ?? 0) > before
+            if !refreshed { try await Task.sleep(nanoseconds: 100_000_000) }
+        }
+        XCTAssertTrue(refreshed)
+        XCTAssertTrue(latest.isHittable)
+        XCTAssertEqual(latest.frame.minY, initialFrame.minY, accuracy: 1, "Refreshing the same history must not move the viewport")
+        capture("messages-stable-cached-position", app: app)
+        let earliest = app.staticTexts["历史 UAT 回复 1"]
+        for _ in 0..<5 where !earliest.isHittable {
+            app.scrollViews.firstMatch.swipeDown()
+        }
+        XCTAssertTrue(earliest.isHittable, "The timestamp gesture must leave vertical history scrolling available")
     }
 
     func testHomeCallRecordingAndNavigation() async throws {
@@ -240,8 +572,8 @@ final class CommunicationUXTests: XCTestCase {
         let call = app.buttons["call-uat-call-example"]
         let missed = app.buttons["call-uat-call-missed"]
         XCTAssertTrue(call.waitForExistence(timeout: 5))
-        app.buttons["选择通话"].tap()
-        call.tap()
+        call.press(forDuration: 0.65)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
         missed.tap()
         app.buttons["删除"].tap()
         let confirmation = app.alerts["删除所选通话？"]
@@ -261,8 +593,9 @@ final class CommunicationUXTests: XCTestCase {
         XCTAssertTrue(app.buttons["activity-message-\(threadID)"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["activity-call-uat-call-example"].exists)
         XCTAssertFalse(app.buttons["activity-call-uat-call-missed"].exists)
-        app.buttons["section-recordings"].tap()
-        XCTAssertFalse(app.buttons["recording-uat-recording-example"].exists)
+        app.buttons["section-calls"].tap()
+        app.buttons["有录音"].tap()
+        XCTAssertFalse(app.buttons["call-uat-call-example"].exists)
         let after = try await fixture("/__uat/state")
         XCTAssertEqual((after["threads"] as? [Any])?.count, 2)
         XCTAssertEqual((after["calls"] as? [Any])?.count, 0)

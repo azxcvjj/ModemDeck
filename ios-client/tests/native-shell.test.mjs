@@ -169,8 +169,8 @@ test('native call control preserves server defaults and serializes completed DTM
   ])
 
   assert.match(delegate, /configure\(store: credentialStore\)/)
-  assert.match(app, /\.accessibilityHidden\(callController\.call != nil\)/)
-  assert.match(app, /\.accessibilityAddTraits\(\.isModal\)/)
+  assert.match(app, /\.accessibilityHidden\(callController\.call != nil && callExpanded\)/)
+  assert.match(app, /\.accessibilityAddTraits\(callExpanded \? \.isModal : \[\]\)/)
   assert.match(api, /recordingEnabled: Bool\?/)
   assert.match(api, /func callRecording\(callID:/)
   assert.match(session, /func enqueueDTMF\(_ digits: String\) -> Bool/)
@@ -179,7 +179,7 @@ test('native call control preserves server defaults and serializes completed DTM
   assert.match(session, /recordingReady \? recording : nil|recording: Bool\?/)
   assert.match(session, /capabilities\?\.dial == true && \$0\.capabilities\?\.media == true/)
   assert.match(calls, /\(48\.\.\.57\)\.contains\(scalar\.value\)/)
-  assert.match(calls, /\.keyboardType\(\.namePhonePad\)/)
+  assert.match(calls, /field\.inputView = UIView\(frame: \.zero\)/)
   assert.match(calls, /guard callController\.enqueueDTMF\(digit\) else \{ return \}/)
   assert.match(calls, /if call\.testCall \{ return true \}/)
   assert.match(calls, /!call\.testCall &&[\s\S]*canSendDTMF/)
@@ -260,14 +260,11 @@ test('SwiftUI is the universal iPhone and iPad application root', async () => {
   const phoneTabStart = app.indexOf("private struct ModemDeckPhoneTabBar")
   const padShellStart = app.indexOf("private struct ModemDeckPadNavigationRail")
   const phoneTab = app.slice(phoneTabStart, padShellStart)
-  assert.match(phoneTab, /\.offset\(y: -10\)/)
-  assert.match(phoneTab, /guard !showingDialer else \{ return \}/)
   assert.doesNotMatch(phoneTab, /showingDialer \? "xmark"/)
   assert.doesNotMatch(phoneTab, /showingDialer\.toggle\(\)/)
-  assert.match(phoneTab, /\.background\(alignment: \.top\)/)
   assert.match(app, /case dial/)
   assert.match(app, /ModemDeckDialerPanel/)
-  assert.match(app, /\.preferredColorScheme\(callController\.call == nil \? \.light : \.dark\)/)
+  assert.match(app, /\.preferredColorScheme\(ModemDeckAppearance\(rawValue: appearance\)\?\.colorScheme\)/)
   assert.match(
     app,
     /struct ModemDeckSectionTabs[\s\S]*ModemDeckLazySectionHost\([\s\S]*activeSection: activeSection/
@@ -275,13 +272,9 @@ test('SwiftUI is the universal iPhone and iPad application root', async () => {
   assert.doesNotMatch(app, /\.opacity\(section == activeSection \? 1 : 0\)/)
   assert.doesNotMatch(app, /TabView\(selection:/)
   assert.match(app, /ModemDeckPadNavigationRail/)
-  assert.match(app, /\.frame\(width: 92\)/)
+  assert.match(app, /\.frame\(width: 196\)/)
   assert.match(app, /struct ModemDeckPadDialerAction/)
   assert.match(app, /\\\.modemDeckPadDialerAction[\s\S]*controller\.text\("打开拨号盘", "Open dialer"\)/)
-  assert.match(app, /ModemDeckLucideIcon\([\s\S]*ModemDeckLucideAsset\.phoneCall/)
-  assert.match(app, /duration: 0\.22/)
-  assert.match(app, /ModemDeckDialerMotion\.phoneTransition/)
-  assert.match(app, /ModemDeckDialerMotion\.padTransition/)
   assert.doesNotMatch(app, /interactiveSpring\(response: 0\.3[48]/)
   assert.doesNotMatch(app, /\.animation\(dialerAnimation, value: showingDialer\)/)
   assert.match(project, /TARGETED_DEVICE_FAMILY = "1,2";/)
@@ -290,7 +283,7 @@ test('SwiftUI is the universal iPhone and iPad application root', async () => {
     /public in Resources|Main\.storyboard in Resources|capacitor\.config\.json in Resources|config\.xml in Resources/
   )
   assert.doesNotMatch(info, /UIMainStoryboardFile|UISceneStoryboardFile/)
-  assert.match(info, /<key>UIUserInterfaceStyle<\/key>\s*<string>Light<\/string>/)
+  assert.doesNotMatch(info, /<key>UIUserInterfaceStyle<\/key>\s*<string>Light<\/string>/)
   const phoneOrientations = info.match(
     /<key>UISupportedInterfaceOrientations<\/key>\s*<array>([\s\S]*?)<\/array>/
   )?.[1] || ''
@@ -311,7 +304,7 @@ test('SwiftUI is the universal iPhone and iPad application root', async () => {
   assert.doesNotMatch(app, /horizontalSizeClass/)
   assert.match(
     app,
-    /private enum ModemDeckPhoneTab:[\s\S]*case home[\s\S]*case contacts[\s\S]*case messages[\s\S]*case dial[\s\S]*case calls[\s\S]*case recordings[\s\S]*case settings/
+    /static var contentSections: \[ModemDeckSection\] \{\s*\[\.home, \.messages, \.contacts, \.calls, \.settings\]/
   )
   assert.doesNotMatch(app, /ModemDeckMoreSheet|case more|showingMore/)
   assert.match(runner, /MODEMDECK_SIMULATOR_FAMILY/)
@@ -413,14 +406,14 @@ test('native home omits overview and recent activity heading rows', async () => 
   assert.match(builder, /v-if=\"false\" class=\"dashboard-list-label\"/)
 })
 
-test('native home uses compact line cards instead of summary counters', async () => {
+test('native recents keeps real line identities and shortcuts into the shared calls store', async () => {
   const [app, home] = await Promise.all([
     source('ios/App/App/ModemDeckApp.swift'), source('ios/App/App/ModemDeckHomeView.swift')
   ])
   assert.match(home, /ModemDeckHomeLineGrid\([\s\S]*lines: controller\.bootstrap\?\.lines \?\? \[\]/)
   assert.match(app, /private struct ModemDeckHomeLineCard/)
-  assert.match(app, /GridItem\(\.adaptive\(minimum: 168, maximum: 280\), spacing: 8\)/)
-  assert.doesNotMatch(home, /ModemDeckPageHeader|最近活动|Recent Activity/)
+  assert.match(home, /controller\.openCalls\(filter: filter\)/)
+  assert.match(home, /ModemDeckPageHeader\(title: controller\.text\("最近", "Recents"\)\)/)
   assert.doesNotMatch(app + home, /ModemDeckHomeSummaryGrid|unreadMessageCount|missedCallCount|onlineLineCount/)
 })
 
@@ -565,7 +558,7 @@ test('native tabs lazily retain an independent NavigationStack per visited modul
   assert.match(app, /\.animation\(nil, value: activeSection\)/)
   assert.match(app, /\.onChange\(of: activeSection\)[\s\S]*resignFirstResponder/)
   assert.equal((app.match(/ModemDeckSectionTabs\(controller: controller\)/g) || []).length, 1)
-  assert.doesNotMatch(app, /ForEach\(ModemDeckSection\.contentSections\)[\s\S]*\.opacity\(/)
+  assert.doesNotMatch(app, /\.opacity\(section == activeSection/)
   assert.doesNotMatch(app, /NavigationView \{\s*destination\(for: controller\.selectedSection\)/)
 })
 
@@ -582,12 +575,12 @@ test('native offline mode preserves protected cached history without blocking th
   assert.match(api, /isExcludedFromBackup = true/)
   assert.match(api, /digest\("\\\(credential\.serverURL\)\\u\{0\}\\\(credential\.token\)"\)/)
   assert.match(api, /func clearCachedData\(\)/)
-  assert.match(session, /session = api\.cachedMobileSession\(\)[\s\S]*bootstrap = api\.cachedBootstrap\(\)[\s\S]*phase = \.paired/)
+  assert.match(session, /phase = \.paired[\s\S]*await api\.cachedStartupData\(\)/)
   assert.match(session, /connectionState = \.offline[\s\S]*phase = \.paired/)
-  assert.match(session, /contacts = api\.cachedContacts\(\)/)
-  assert.match(session, /threads = api\.cachedMessageThreads\(\)/)
+  assert.match(session, /contactsStore\.restore\(cached\.contacts\)/)
+  assert.match(session, /messagesStore\.restore\(threads: cached\.threads, unread: cached\.unread\)/)
   assert.match(session, /messages = api\.cachedMessages/)
-  assert.match(session, /calls = api\.cachedCalls\(\)[\s\S]*recordings = api\.cachedRecordings\(\)/)
+  assert.match(session, /callsStore\.restore\(calls: cached\.calls, recordings: cached\.recordings\)/)
   assert.match(app, /ModemDeckOfflineBanner/)
   assert.match(app, /暂时离线 · 自动重连中/)
   assert.match(app, /历史内容仍可查看和复制/)
@@ -675,12 +668,12 @@ test('native communication density keeps compact visuals and full touch targets'
 
   assert.match(app, /static let controlHitSize: CGFloat = 44/)
   assert.match(app, /static let controlVisualSize: CGFloat = 36/)
-  assert.match(app, /static let listRowMinHeight: CGFloat = 66/)
+  assert.match(app, /static let listRowMinHeight: CGFloat = 80/)
   assert.match(app, /struct ModemDeckSearchField[\s\S]*\.font\(\.subheadline\)/)
   assert.match(app, /struct ModemDeckSegmentPicker[\s\S]*\.font\(\.caption\.weight/)
   assert.match(app, /accessibilityAddTraits\(active \? \.isSelected : \[\]\)/)
-  assert.ok((communication.match(/\.modemDeckListToolbar/g) || []).length >= 2)
-  assert.ok((calls.match(/\.modemDeckListToolbar/g) || []).length >= 2)
+  assert.ok((communication.match(/ModemDeckCollectionHeader\(/g) || []).length >= 2)
+  assert.ok((calls.match(/ModemDeckCollectionHeader\(/g) || []).length >= 2)
   assert.match(settings, /ModemDeckSettingsDirectoryRow[\s\S]*ModemDeckLayout\.listRowMinHeight/)
 })
 
@@ -730,7 +723,6 @@ test('native iPad communication workspaces mirror the Web list-detail geometry',
   assert.match(app, /static let splitWorkspaceMinimumWidth: CGFloat = 900/)
   assert.match(app, /UIDevice\.current\.userInterfaceIdiom == \.pad/)
   assert.match(app, /ModemDeckPadNavigationRail/)
-  assert.match(app, /floating: true[\s\S]*\.frame\(width: 390, height: 700\)/)
   assert.match(communication, /selectedContactID/)
   assert.match(communication, /selectedThreadID/)
   assert.ok(
@@ -793,30 +785,24 @@ test('native settings expose the full personal and management directory', async 
   assert.match(api, /var calls: ModemDeckDiagnosticAvailability \{ callRuntime \}/)
 })
 
-test('native dialer uses true circular keys and Web-style fixed actions', async () => {
-  const calls = await source('ios/App/App/ModemDeckCallViews.swift')
-
-  assert.match(calls, /ModemDeckDialerPanelShape/)
-  assert.match(calls, /roundsAllCorners: floating/)
-  assert.match(calls, /let compact = geometry\.size\.height < 620/)
-  assert.match(calls, /let keySize: CGFloat = compact \? 56 : 62/)
-  assert.match(calls, /ModemDeckDialKeyButton\([\s\S]*size: keySize/)
-  assert.match(calls, /ModemDeckDialKeyStyle[\s\S]*\.clipShape\(Circle\(\)\)/)
-  assert.match(calls, /\.scaleEffect\(configuration\.isPressed \? 0\.9 : 1\)/)
-  assert.match(calls, /LongPressGesture\(minimumDuration: 0\.5\)/)
-  assert.match(calls, /ModemDeckDTMFTonePlayer\.shared\.play\(digit\)/)
-  assert.match(calls, /UIImpactFeedbackGenerator/)
-  assert.match(calls, /private var suggestions: \[ModemDeckDialSuggestion\]/)
+test('native dialer preserves its draft, line choice, recording preference and DTMF controls', async () => {
+  const [calls, app, session] = await Promise.all([
+    source('ios/App/App/ModemDeckCallViews.swift'), source('ios/App/App/ModemDeckApp.swift'),
+    source('ios/App/App/ModemDeckSession.swift')
+  ])
+  assert.match(session, /let dialDraft = ModemDeckDialDraft\(\)/)
+  assert.match(calls, /wrappedValue: controller\.dialDraft/)
+  assert.match(calls, /draft\.lineSelectionOverridden/)
+  assert.match(calls, /voiceDialLine\(preferredID: contact\.preferredLineId\)/)
   assert.match(calls, /normalizeModemDeckDialTarget/)
   assert.match(calls, /controller\.api\.recordingSettings\(\)/)
-  assert.match(calls, /controller\.text\("通话线路", "Calling line"\)/)
-  assert.match(calls, /controller\.text\("默认", "Default"\)/)
-  assert.match(calls, /controller\.text\("录音", "Record"\)/)
-  assert.match(calls, /controller\.text\("拨打", "Call"\)/)
-  assert.match(calls, /ModemDeckInCallKeyStyle[\s\S]*\.clipShape\(Circle\(\)\)/)
+  assert.match(calls, /recording: draft\.recordingInitialized \? draft\.recording : nil/)
+  assert.match(calls, /LongPressGesture\(minimumDuration: 0\.5\)/)
+  assert.match(calls, /ModemDeckDTMFTonePlayer\.shared\.play\(digit\)/)
+  assert.match(app, /\.sheet\(isPresented: \$showingDialer\)/)
+  assert.match(app, /\.presentationDragIndicator\(\.visible\)/)
   assert.match(calls, /pressedDigits: dtmfDigits/)
-  assert.match(calls, /\.frame\(width: 238\)/)
-  assert.doesNotMatch(calls, /\.frame\(width: 66, height: 58\)/)
+  assert.match(calls, /ModemDeckInCallKeyStyle/)
 })
 
 test('CallKit foreground reconciliation opens the native active-call surface', async () => {
@@ -877,7 +863,7 @@ test('native communication lists expose Web-equivalent batch mutations', async (
   ])
 
   assert.match(communication, /struct ModemDeckNewMessageView/)
-  assert.match(communication, /actionIcon: "square\.and\.pencil"/)
+  assert.match(communication, /icon: "square\.and\.pencil"/)
   assert.match(communication, /private var messageBatchBar/)
   assert.match(communication, /mutateSelectedThreads\(hasUnread \? \.read : \.unread\)/)
   assert.match(communication, /mutateSelectedThreads\(allFavorite \? \.unfavorite : \.favorite\)/)
@@ -942,7 +928,7 @@ test('home stays a quick view with shared row actions and split detail', async (
   assert.doesNotMatch(home, /recordings: \[\]/)
   assert.doesNotMatch(home, /ModemDeckSearchField|ModemDeckToolbarButton|ModemDeckSegmentPicker|ModemDeckLineFilterMenu|ModemDeckBatchActionBar/)
   assert.doesNotMatch(home, /selectedIDs|mutateSelected|filteredItems/)
-  assert.match(home, /ForEach\(items\)/)
+  assert.match(home, /ForEach\(activity.days\)/)
   assert.match(home, /\.refreshable \{ await controller\.refresh\(\) \}/)
   assert.match(home, /await messages\.mutate\(action, threads: \[thread\]\)/)
   assert.match(home, /await calls\.mutate\(action, calls: \[call\]\)/)

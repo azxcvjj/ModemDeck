@@ -2,38 +2,90 @@ import SwiftUI
 import UIKit
 
 extension Color {
-    static let mdBackground = Color(red: 0.965, green: 0.969, blue: 0.976)
-    static let mdSurface = Color.white
-    static let mdSurfaceSubtle = Color(red: 0.980, green: 0.984, blue: 0.988)
-    static let mdSurfaceHover = Color(red: 0.941, green: 0.953, blue: 0.961)
-    static let mdSelected = Color(red: 0.902, green: 0.953, blue: 0.941)
-    static let mdText = Color(red: 0.114, green: 0.161, blue: 0.224)
-    static let mdMuted = Color(red: 0.400, green: 0.439, blue: 0.514)
-    static let mdFaint = Color(red: 0.596, green: 0.635, blue: 0.702)
-    static let mdBorder = Color(red: 0.894, green: 0.906, blue: 0.925)
-    static let mdAccent = Color(red: 0.067, green: 0.471, blue: 0.392)
-    static let mdAccentStrong = Color(red: 0.047, green: 0.384, blue: 0.310)
-    static let mdAccentSoft = Color(red: 0.875, green: 0.945, blue: 0.929)
-    static let mdBlue = Color(red: 0.145, green: 0.388, blue: 0.663)
-    static let mdBlueSoft = Color(red: 0.918, green: 0.949, blue: 0.984)
-    static let mdDanger = Color(red: 0.769, green: 0.239, blue: 0.294)
+    static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: CGFloat((hex >> 16) & 255) / 255,
+                           green: CGFloat((hex >> 8) & 255) / 255,
+                           blue: CGFloat(hex & 255) / 255, alpha: 1)
+        })
+    }
+
+    static let mdBackground = adaptive(0xF5F7F6, 0x101512)
+    static let mdSurface = adaptive(0xFFFFFF, 0x1C2420)
+    static let mdSurfaceSubtle = adaptive(0xF5F7F6, 0x171E1A)
+    static let mdSurfaceHover = adaptive(0xE9EEEB, 0x29332D)
+    static let mdSelected = adaptive(0xDFEEE7, 0x244238)
+    static let mdText = adaptive(0x19241F, 0xEBF0ED)
+    static let mdMuted = adaptive(0x58675F, 0xAFBDB4)
+    static let mdFaint = adaptive(0x69776F, 0x9BAAA1)
+    static let mdBorder = adaptive(0xDEE5E0, 0x354139)
+    static let mdAccent = adaptive(0x117864, 0x85D4B8)
+    static let mdAccentStrong = adaptive(0x0C624F, 0xA5E3CC)
+    static let mdAccentSoft = adaptive(0xE1F0E9, 0x243E33)
+    static let mdOnAccent = adaptive(0xFFFFFF, 0x103328)
+    static let mdBlue = adaptive(0x2568A6, 0x92C5F3)
+    static let mdBlueSoft = adaptive(0xEAF2F9, 0x20384D)
+    static let mdDanger = adaptive(0xB93643, 0xFF9B9E)
     static let modemDeckTint = mdAccent
+}
+
+enum ModemDeckAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
 }
 
 private struct ModemDeckInteractivePopSupport: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         weak var navigationController: UINavigationController?
+        private weak var edgeGesture: UIGestureRecognizer?
+        private weak var contentGesture: UIGestureRecognizer?
+        private weak var previousEdgeDelegate: UIGestureRecognizerDelegate?
+        private weak var previousContentDelegate: UIGestureRecognizerDelegate?
 
         func install(on navigationController: UINavigationController?) {
             guard let navigationController,
                   let gesture = navigationController.interactivePopGestureRecognizer else { return }
+            if self.navigationController !== navigationController { uninstall() }
             self.navigationController = navigationController
+            if gesture.delegate !== self { previousEdgeDelegate = gesture.delegate }
+            edgeGesture = gesture
             gesture.delegate = self
             gesture.isEnabled = true
+            if #available(iOS 26.0, *),
+               let gesture = navigationController.interactiveContentPopGestureRecognizer {
+                if gesture.delegate !== self { previousContentDelegate = gesture.delegate }
+                contentGesture = gesture
+                gesture.delegate = self
+                gesture.isEnabled = true
+            }
+        }
+
+        func uninstall() {
+            if edgeGesture?.delegate === self { edgeGesture?.delegate = previousEdgeDelegate }
+            if contentGesture?.delegate === self { contentGesture?.delegate = previousContentDelegate }
+            edgeGesture = nil
+            contentGesture = nil
+            navigationController = nil
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            (navigationController?.viewControllers.count ?? 0) > 1
+            guard let navigationController,
+                  navigationController.viewControllers.count > 1,
+                  navigationController.transitionCoordinator == nil else { return false }
+            if let pan = gestureRecognizer as? UIPanGestureRecognizer {
+                let velocity = pan.velocity(in: navigationController.view)
+                let direction: CGFloat = navigationController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1
+                return velocity.x * direction > abs(velocity.y)
+            }
+            return true
         }
     }
 
@@ -48,6 +100,13 @@ private struct ModemDeckInteractivePopSupport: UIViewControllerRepresentable {
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
             resolve?(navigationController)
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            // SwiftUI can reconfigure navigation gestures after an appearance,
+            // including when a retained tab is attached to the shell again.
+            if view.window != nil { resolve?(navigationController) }
         }
     }
 
@@ -65,6 +124,11 @@ private struct ModemDeckInteractivePopSupport: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ResolverViewController, context: Context) {
         context.coordinator.install(on: controller.navigationController)
+    }
+
+    static func dismantleUIViewController(_ controller: ResolverViewController, coordinator: Coordinator) {
+        controller.resolve = nil
+        coordinator.uninstall()
     }
 }
 
@@ -100,10 +164,17 @@ struct ModemDeckCopyItem: Identifiable, Hashable {
 private struct ModemDeckCopyMenuModifier: ViewModifier {
     let items: [ModemDeckCopyItem]
     let actions: [ModemDeckContextAction]
+    @Environment(\.modemDeckAllowsContextMenu) private var allowsContextMenu
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if items.isEmpty && actions.isEmpty {
+        if !allowsContextMenu {
+            content.accessibilityActions {
+                ForEach(items) { item in
+                    Button(item.label) { UIPasteboard.general.string = item.value }
+                }
+            }
+        } else if items.isEmpty && actions.isEmpty {
             content
         } else {
             content.contextMenu {
@@ -250,17 +321,22 @@ enum ModemDeckDateText {
 enum ModemDeckLayout {
     static let padListWidth: CGFloat = 340
     static let splitWorkspaceMinimumWidth: CGFloat = 900
-    static let pageHorizontalPadding: CGFloat = 14
-    static let pageHeaderHeight: CGFloat = 52
-    static let toolbarHorizontalPadding: CGFloat = 10
+    static let pageHorizontalPadding: CGFloat = 20
+    static let pageHeaderHeight: CGFloat = 76
+    static let collectionHeaderHeight: CGFloat = 56
+    static let toolbarHorizontalPadding: CGFloat = 20
     static let toolbarVerticalPadding: CGFloat = 4
     static let toolbarGap: CGFloat = 6
     static let controlHitSize: CGFloat = 44
     static let controlVisualSize: CGFloat = 36
-    static let searchVisualHeight: CGFloat = 38
-    static let listHorizontalPadding: CGFloat = 14
-    static let listRowMinHeight: CGFloat = 66
-    static let listAvatarSize: CGFloat = 40
+    static let searchVisualHeight: CGFloat = 44
+    static let listHorizontalPadding: CGFloat = 20
+    static let listRowMinHeight: CGFloat = 80
+    static let listAvatarSize: CGFloat = 44
+    static let listAvatarTextSpacing: CGFloat = 12
+    static let listTextLeading = listHorizontalPadding + listAvatarSize + listAvatarTextSpacing
+    static let listUnreadIndicatorSize: CGFloat = 10
+    static let listSelectionMarkWidth: CGFloat = 24
     static var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 }
 
@@ -295,6 +371,8 @@ struct ModemDeckRootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var started = false
+    @State private var callExpanded = true
+    @AppStorage("modemdeck.appearance") private var appearance = ModemDeckAppearance.system.rawValue
 
     init(controller: ModemDeckSessionController) {
         self.controller = controller
@@ -304,22 +382,26 @@ struct ModemDeckRootView: View {
     var body: some View {
         ZStack {
             content
-                .allowsHitTesting(callController.call == nil)
-                .accessibilityHidden(callController.call != nil)
+                .allowsHitTesting(callController.call == nil || !callExpanded)
+                .accessibilityHidden(callController.call != nil && callExpanded)
 
             if let call = callController.call {
                 ModemDeckActiveCallView(
                     call: call,
                     controller: controller,
-                    callController: callController
+                    callController: callController,
+                    collapse: { callExpanded = false }
                 )
                 .accessibilityElement(children: .contain)
-                .accessibilityAddTraits(.isModal)
+                .accessibilityAddTraits(callExpanded ? .isModal : [])
+                .opacity(callExpanded ? 1 : 0)
+                .allowsHitTesting(callExpanded)
+                .accessibilityHidden(!callExpanded)
                 .transition(reduceMotion ? .identity : .opacity)
                 .zIndex(20)
             }
         }
-        .preferredColorScheme(callController.call == nil ? .light : .dark)
+        .preferredColorScheme(ModemDeckAppearance(rawValue: appearance)?.colorScheme)
         .accentColor(.mdAccent)
         .textSelection(.enabled)
         .task {
@@ -351,6 +433,7 @@ struct ModemDeckRootView: View {
             Task { await controller.handleAuthenticationFailure() }
         }
         .onChange(of: callController.call?.id) { callID in
+            callExpanded = callID != nil
             guard callID != nil else { return }
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder),
@@ -371,7 +454,7 @@ struct ModemDeckRootView: View {
         case .unpaired:
             ModemDeckPairingView(session: controller)
         case .paired:
-            ModemDeckAdaptiveShell(controller: controller)
+            ModemDeckAdaptiveShell(controller: controller, callExpanded: $callExpanded)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if controller.connectionState == .offline {
                         ModemDeckOfflineBanner(controller: controller)
@@ -477,7 +560,7 @@ enum ModemDeckSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     static var contentSections: [ModemDeckSection] {
-        allCases.filter { $0 != .dial }
+        [.home, .messages, .contacts, .calls, .settings]
     }
 
     static var initialSection: ModemDeckSection {
@@ -500,24 +583,6 @@ enum ModemDeckSection: String, CaseIterable, Identifiable {
         case .settings: return ModemDeckLucideAsset.settings
         }
     }
-}
-
-private enum ModemDeckDialerMotion {
-    static let animation = Animation.timingCurve(
-        0.2,
-        0.9,
-        0.25,
-        1,
-        duration: 0.22
-    )
-
-    static let phoneTransition = AnyTransition.opacity
-        .combined(with: .offset(y: 12))
-        .combined(with: .scale(scale: 0.99, anchor: .bottom))
-
-    static let padTransition = AnyTransition.opacity
-        .combined(with: .offset(x: 12))
-        .combined(with: .scale(scale: 0.99, anchor: .bottomTrailing))
 }
 
 private struct ModemDeckSectionTabs: View {
@@ -574,9 +639,13 @@ private struct ModemDeckSectionRoot: View {
                     ModemDeckRouteContent(route: route, controller: controller)
                 }
         }
+        .toolbar(.hidden, for: .navigationBar)
         .environment(\.modemDeckNavigate, { navigation.path.append($0) })
         .environment(\.modemDeckUsesSplitWorkspace, usesSplitWorkspace)
         .environment(\.modemDeckPadDialerAction, padDialerAction)
+        .onChange(of: controller.callsNavigationRevision) { _ in
+            if section == .calls { navigation.path.removeAll() }
+        }
     }
 
     @ViewBuilder
@@ -633,6 +702,7 @@ private struct ModemDeckLazySectionHost: UIViewControllerRepresentable {
             controller.didMove(toParent: self)
             visibleController = controller
         }
+
     }
 
     @MainActor
@@ -650,14 +720,14 @@ private struct ModemDeckLazySectionHost: UIViewControllerRepresentable {
         ) {
             let layoutChanged = !isEnvironmentConfigured ||
                 self.usesSplitWorkspace != usesSplitWorkspace
-            let actionAvailabilityChanged = !isEnvironmentConfigured ||
-                (self.padDialerAction == nil) != (padDialerAction == nil)
+            let actionChanged = !isEnvironmentConfigured ||
+                self.padDialerAction?.accessibilityLabel != padDialerAction?.accessibilityLabel
             self.usesSplitWorkspace = usesSplitWorkspace
-            if actionAvailabilityChanged || self.padDialerAction == nil {
+            if actionChanged || self.padDialerAction == nil {
                 self.padDialerAction = padDialerAction
             }
             isEnvironmentConfigured = true
-            guard layoutChanged || actionAvailabilityChanged else { return }
+            guard layoutChanged || actionChanged else { return }
             for (section, hosted) in sections {
                 hosted.rootView = rootView(for: section, controller: controller)
             }
@@ -719,13 +789,14 @@ private struct ModemDeckLazySectionHost: UIViewControllerRepresentable {
 
 private struct ModemDeckAdaptiveShell: View {
     @ObservedObject var controller: ModemDeckSessionController
+    @Binding var callExpanded: Bool
     @StateObject private var retainedSections = ModemDeckLazySectionHost.Coordinator()
 
     var body: some View {
         GeometryReader { geometry in
             let usesSplitWorkspace = ModemDeckLayout.isPad &&
                 geometry.size.width >= ModemDeckLayout.splitWorkspaceMinimumWidth
-            ModemDeckWorkspaceShell(controller: controller, usesSplitWorkspace: usesSplitWorkspace)
+            ModemDeckWorkspaceShell(controller: controller, usesSplitWorkspace: usesSplitWorkspace, callExpanded: $callExpanded)
             .environment(\.modemDeckUsesSplitWorkspace, usesSplitWorkspace)
             .environmentObject(retainedSections)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -735,329 +806,166 @@ private struct ModemDeckAdaptiveShell: View {
 
 private struct ModemDeckWorkspaceShell: View {
     @ObservedObject var controller: ModemDeckSessionController
+    @ObservedObject private var callController: ModemDeckCallController
+    @Binding var callExpanded: Bool
     let usesSplitWorkspace: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingDialer: Bool
 
-    init(controller: ModemDeckSessionController, usesSplitWorkspace: Bool) {
+    init(controller: ModemDeckSessionController, usesSplitWorkspace: Bool, callExpanded: Binding<Bool>) {
         self.controller = controller
         self.usesSplitWorkspace = usesSplitWorkspace
+        _callController = ObservedObject(wrappedValue: controller.callController)
+        _callExpanded = callExpanded
         _showingDialer = State(initialValue: ModemDeckSection.initialSection == .dial)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .bottomTrailing) {
-                HStack(spacing: 0) {
-                    if usesSplitWorkspace {
-                        ModemDeckPadNavigationRail(
-                            controller: controller,
-                            selection: Binding(
-                                get: { controller.selectedSection },
-                                set: { controller.selectedSection = $0 }
-                            ),
-                            showingDialer: $showingDialer
-                        )
-                        Rectangle().fill(Color.mdBorder).frame(width: 1)
-                    }
-                    // The content host keeps the same structural identity when
-                    // the rail and bottom tabs exchange places at the breakpoint.
-                    ZStack(alignment: .bottom) {
-                        ModemDeckSectionTabs(controller: controller)
-                            .environment(
-                                \.modemDeckPadDialerAction,
-                                usesSplitWorkspace ? ModemDeckPadDialerAction(
-                                    accessibilityLabel: controller.text("打开拨号盘", "Open dialer"),
-                                    open: openDialer
-                                ) : nil
-                            )
-                        if showingDialer && !usesSplitWorkspace {
-                            Color.black.opacity(0.16)
-                                .ignoresSafeArea()
-                                .onTapGesture { closeDialer() }
-                                .transition(.opacity)
-                        }
-                        GeometryReader { geometry in
-                            if showingDialer && !usesSplitWorkspace {
-                                VStack(spacing: 0) {
-                                    Spacer(minLength: 8)
-                                    ModemDeckDialerPanel(controller: controller, close: closeDialer)
-                                        .frame(
-                                            width: geometry.size.width,
-                                            height: min(720, max(0, geometry.size.height - 8))
-                                        )
-                                }
-                                .transition(ModemDeckDialerMotion.phoneTransition)
-                            }
-                        }
-                        .allowsHitTesting(showingDialer && !usesSplitWorkspace)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                if usesSplitWorkspace {
+                    ModemDeckPadNavigationRail(
+                        controller: controller, selection: $controller.selectedSection,
+                        openDialer: { if callController.call != nil { callExpanded = true } else { showingDialer = true } }
+                    )
+                    Rectangle().fill(Color.mdBorder).frame(width: 1)
                 }
-                if showingDialer && usesSplitWorkspace {
-                    ModemDeckDialerPanel(controller: controller, close: closeDialer, floating: true)
-                        .frame(width: 390, height: 700)
-                        .padding(16)
-                        .transition(ModemDeckDialerMotion.padTransition)
-                        .zIndex(10)
+                VStack(spacing: 0) {
+                    ModemDeckSectionTabs(controller: controller)
+                        .environment(\.modemDeckPadDialerAction, ModemDeckPadDialerAction(
+                            accessibilityLabel: controller.text("打开拨号盘", "Open dialer"),
+                            open: { if callController.call != nil { callExpanded = true } else { showingDialer = true } }
+                        ))
+                    if let call = callController.call, !callExpanded {
+                        ModemDeckMiniCallBar(call: call, controller: controller, callController: callController,
+                                             restore: { callExpanded = true })
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !usesSplitWorkspace {
-                ModemDeckPhoneTabBar(
-                    controller: controller,
-                    selection: Binding(
-                        get: { controller.selectedSection },
-                        set: { controller.selectedSection = $0 }
-                    ),
-                    showingDialer: $showingDialer
-                )
+                ModemDeckPhoneTabBar(controller: controller, selection: $controller.selectedSection)
             }
         }
-        .background(Color.mdSurface.ignoresSafeArea(edges: .bottom))
-        .accentColor(.mdAccent)
-    }
-
-    private func openDialer() {
-        guard !showingDialer else { return }
-        withAnimation(dialerAnimation) { showingDialer = true }
-    }
-
-    private func closeDialer() {
-        withAnimation(dialerAnimation) { showingDialer = false }
-    }
-
-    private var dialerAnimation: Animation? {
-        reduceMotion ? nil : ModemDeckDialerMotion.animation
+        .background(Color.mdBackground.ignoresSafeArea())
+        .sheet(isPresented: $showingDialer) {
+            ModemDeckDialerPanel(controller: controller, close: { showingDialer = false })
+                .presentationDetents([.height(640), .large])
+                .presentationDragIndicator(.visible)
+        }
+        .onReceive(controller.callController.$call) { call in
+            if call != nil { showingDialer = false }
+        }
     }
 }
 
 private struct ModemDeckPhoneTabBar: View {
     @ObservedObject var controller: ModemDeckSessionController
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: ModemDeckSection
-    @Binding var showingDialer: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(ModemDeckPhoneTab.allCases) { tab in
-                Button {
-                    if tab == .dial {
-                        guard !showingDialer else { return }
-                        withAnimation(dialerAnimation) { showingDialer = true }
-                    } else {
-                        withAnimation(dialerAnimation) { showingDialer = false }
-                        if let section = tab.section {
-                            selection = section
-                        }
+            ForEach(ModemDeckSection.contentSections) { section in
+                Button { selection = section } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: section.systemImage)
+                            .font(.system(size: 21, weight: .regular))
+                            .frame(height: 25)
+                        Text(section.title(controller))
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
                     }
-                } label: {
-                    if tab == .dial {
-                        VStack(spacing: 2) {
-                            ModemDeckLucideIcon(
-                                asset: ModemDeckLucideAsset.phoneCall,
-                                size: 23
-                            )
-                                .foregroundColor(.white)
-                                .frame(width: 52, height: 52)
-                                .background(showingDialer ? Color.mdAccentStrong : Color.mdAccent)
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.mdSurface, lineWidth: 5))
-                                .shadow(
-                                    color: Color.black.opacity(0.13),
-                                    radius: 6,
-                                    y: 2
-                                )
-                                .scaleEffect(showingDialer ? 0.96 : 1)
-                            Text(title(for: tab))
-                                .font(.caption2.weight(.medium))
-                                .foregroundColor(.mdAccent)
-                        }
-                        .offset(y: -10)
-                    } else {
-                        VStack(spacing: 4) {
-                            ModemDeckLucideIcon(asset: tab.icon, size: 21)
-                                .frame(height: 25)
-                            Text(title(for: tab))
-                                .font(.caption2.weight(.medium))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.55)
-                        }
-                        .foregroundColor(isSelected(tab) ? .mdAccent : .mdMuted)
-                    }
+                    .foregroundColor(selection == section ? .mdAccent : .mdMuted)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, minHeight: 66)
-                .accessibilityLabel(title(for: tab))
-                .accessibilityIdentifier("section-\(tab.id)")
-                .accessibilityValue(isSelected(tab) ? controller.text("已选择", "Selected") : "")
-                .accessibilityAddTraits(isSelected(tab) ? .isSelected : [])
-                .zIndex(tab == .dial ? 1 : 0)
+                .accessibilityIdentifier("section-\(section.id)")
+                .accessibilityValue(selection == section ? controller.text("已选择", "Selected") : "")
+                .accessibilityAddTraits(selection == section ? .isSelected : [])
             }
         }
-        .dynamicTypeSize(...DynamicTypeSize.large)
-        .background(Color.mdSurface)
-        .background(alignment: .top) {
-            Rectangle().fill(Color.mdBorder).frame(height: 1)
-        }
-    }
-
-    private var dialerAnimation: Animation? {
-        reduceMotion ? nil : ModemDeckDialerMotion.animation
-    }
-
-    private func isSelected(_ tab: ModemDeckPhoneTab) -> Bool {
-        guard !showingDialer else { return tab == .dial }
-        return tab.section == selection
-    }
-
-    private func title(for tab: ModemDeckPhoneTab) -> String {
-        switch tab {
-        case .home: return controller.text("首页", "Home")
-        case .contacts: return controller.text("联系人", "Contacts")
-        case .messages: return controller.text("消息", "Messages")
-        case .dial: return controller.text("拨号", "Dial")
-        case .calls: return controller.text("通话", "Calls")
-        case .recordings: return controller.text("录音", "Recordings")
-        case .settings: return controller.text("设置", "Settings")
-        }
+        .padding(.horizontal, 8)
+        .padding(.top, 5)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .background(Color.mdSurface.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Rectangle().fill(Color.mdBorder).frame(height: 0.5) }
     }
 }
 
-private enum ModemDeckPhoneTab: String, CaseIterable, Identifiable {
-    case home
-    case contacts
-    case messages
-    case dial
-    case calls
-    case recordings
-    case settings
-
-    var id: String { rawValue }
-
-    var section: ModemDeckSection? {
+extension ModemDeckSection {
+    var systemImage: String {
         switch self {
-        case .home: return .home
-        case .contacts: return .contacts
-        case .messages: return .messages
-        case .calls: return .calls
-        case .recordings: return .recordings
-        case .settings: return .settings
-        case .dial: return nil
+        case .home: return "clock.arrow.circlepath"
+        case .messages: return "bubble.left.and.bubble.right"
+        case .contacts: return "person.2"
+        case .calls: return "phone"
+        case .settings: return "gearshape"
+        case .recordings: return "waveform"
+        case .dial: return "phone.arrow.up.right"
         }
     }
 
-    var icon: String {
+    @MainActor func title(_ controller: ModemDeckSessionController) -> String {
         switch self {
-        case .home: return ModemDeckLucideAsset.house
-        case .contacts: return ModemDeckLucideAsset.usersRound
-        case .messages: return ModemDeckLucideAsset.messageSquareText
-        case .dial: return ModemDeckLucideAsset.phoneCall
-        case .calls: return ModemDeckLucideAsset.phone
-        case .recordings: return ModemDeckLucideAsset.audioLines
-        case .settings: return ModemDeckLucideAsset.settings
+        case .home: return controller.text("最近", "Recents")
+        case .messages: return controller.text("消息", "Messages")
+        case .contacts: return controller.text("联系人", "Contacts")
+        case .calls: return controller.text("通话", "Calls")
+        case .settings: return controller.text("设置", "Settings")
+        case .recordings: return controller.text("录音", "Recordings")
+        case .dial: return controller.text("拨号", "Dial")
         }
     }
 }
 
 private struct ModemDeckPadNavigationRail: View {
     @ObservedObject var controller: ModemDeckSessionController
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: ModemDeckSection
-    @Binding var showingDialer: Bool
+    let openDialer: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 5) {
-                Text("M")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(.white)
-                    .frame(width: 34, height: 34)
-                    .background(Color.mdAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Text("Modem\nDeck")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(.mdText)
-                    .multilineTextAlignment(.leading)
-                    .lineSpacing(-1)
-            }
-            .frame(height: 54)
-
-            ForEach(ModemDeckSection.allCases) { section in
-                Button {
-                    if section == .dial {
-                        withAnimation(dialerAnimation) { showingDialer.toggle() }
-                    } else {
-                        withAnimation(dialerAnimation) { showingDialer = false }
-                        selection = section
-                    }
-                } label: {
-                    VStack(spacing: 4) {
-                        ModemDeckLucideIcon(asset: section.icon, size: 21)
-                            .frame(height: 24)
-                        Text(title(for: section))
-                            .font(.caption2.weight(.medium))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                    .foregroundColor(isSelected(section) ? .mdAccentStrong : .mdMuted)
-                    .frame(width: 78, height: 62)
-                    .background(isSelected(section) ? Color.mdSelected : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(alignment: .leading) {
-                        if isSelected(section) {
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(Color.mdAccent)
-                                .frame(width: 3, height: 28)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ModemDeck")
+                .font(.title3.weight(.semibold))
+                .foregroundColor(.mdText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 24)
+            ForEach(ModemDeckSection.contentSections) { section in
+                Button { selection = section } label: {
+                    Label(section.title(controller), systemImage: section.systemImage)
+                        .font(.body)
+                        .foregroundColor(selection == section ? .mdAccentStrong : .mdText)
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .background(selection == section ? Color.mdSurface : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(title(for: section))
                 .accessibilityIdentifier("section-\(section.id)")
-                .accessibilityValue(
-                    isSelected(section) ? controller.text("已选择", "Selected") : ""
-                )
-                .accessibilityAddTraits(isSelected(section) ? .isSelected : [])
+                .accessibilityAddTraits(selection == section ? .isSelected : [])
             }
-
+            Button(action: openDialer) {
+                Label(controller.text("拨号", "Dial"), systemImage: "phone.arrow.up.right")
+                    .font(.body)
+                    .foregroundColor(.mdAccent)
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .padding(.horizontal, 14)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(controller.text("打开拨号盘", "Open dialer"))
             Spacer()
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .padding(.horizontal, 7)
-        .frame(width: 92)
-        .background(Color.mdSurface.ignoresSafeArea())
-    }
-
-    private var dialerAnimation: Animation? {
-        reduceMotion ? nil : ModemDeckDialerMotion.animation
-    }
-
-    private func isSelected(_ section: ModemDeckSection) -> Bool {
-        section == .dial ? showingDialer : (!showingDialer && selection == section)
-    }
-
-    private func title(for section: ModemDeckSection) -> String {
-        switch section {
-        case .home: return controller.text("首页", "Home")
-        case .contacts: return controller.text("联系人", "Contacts")
-        case .messages: return controller.text("消息", "Messages")
-        case .dial: return controller.text("拨号", "Dial")
-        case .calls: return controller.text("通话", "Calls")
-        case .recordings: return controller.text("录音", "Recordings")
-        case .settings: return controller.text("设置", "Settings")
-        }
+        .padding(.horizontal, 12)
+        .frame(width: 196)
+        .background(Color.mdSurfaceHover.ignoresSafeArea())
     }
 }
-
 
 struct ModemDeckHomeLineGrid: View {
     @ObservedObject var controller: ModemDeckSessionController
     let lines: [ModemDeckLine]
-
-    private let columns = [
-        GridItem(.adaptive(minimum: 168, maximum: 280), spacing: 8)
-    ]
 
     var body: some View {
         Group {
@@ -1078,11 +986,15 @@ struct ModemDeckHomeLineGrid: View {
                         .stroke(Color.mdBorder, lineWidth: 1)
                 )
             } else {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                    ForEach(lines) { line in
+                VStack(spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                        if index > 0 { Divider().padding(.leading, 62) }
                         ModemDeckHomeLineCard(controller: controller, line: line)
                     }
                 }
+                .padding(4)
+                .background(Color.mdSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
             }
         }
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -1129,13 +1041,9 @@ private struct ModemDeckHomeLineCard: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .background(Color.mdSurface)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.mdBorder, lineWidth: 1)
-        )
         .accessibilityElement(children: .combine)
         .modemDeckCopyMenu([
             .init(label: controller.text("复制号码", "Copy Number"), value: line.phoneNumber),
@@ -1200,6 +1108,8 @@ struct ModemDeckLoadErrorState: View {
 
 struct ModemDeckPageHeader: View {
     let title: String
+    var backAction: (() -> Void)? = nil
+    var backAccessibilityText = ""
     var secondaryActionIcon: String? = nil
     var secondaryActionAccessibilityText = ""
     var secondaryActionDisabled = false
@@ -1212,8 +1122,17 @@ struct ModemDeckPageHeader: View {
 
     var body: some View {
         HStack {
+            if let backAction {
+                Button(action: backAction) {
+                    Image(systemName: "chevron.left").font(.body.weight(.medium))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.mdAccent)
+                .accessibilityLabel(backAccessibilityText)
+            }
             Text(title)
-                .font(.headline)
+                .font(backAction == nil ? .largeTitle.weight(.bold) : .title2.weight(.bold))
                 .foregroundColor(.mdText)
                 .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             Spacer()
@@ -1244,25 +1163,12 @@ struct ModemDeckPageHeader: View {
                 }
                 if let padDialerAction {
                     Button(action: padDialerAction.open) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.mdSurfaceSubtle)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(Color.mdBorder, lineWidth: 1)
-                                )
-                            Image(systemName: "phone.arrow.up.right")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(.mdAccent)
-                        }
-                        .frame(
-                            width: ModemDeckLayout.controlVisualSize,
-                            height: ModemDeckLayout.controlVisualSize
-                        )
-                        .frame(
-                            width: ModemDeckLayout.controlHitSize,
-                            height: ModemDeckLayout.controlHitSize
-                        )
+                        Image(systemName: "phone")
+                            .font(.body.weight(.medium))
+                            .foregroundColor(.mdAccent)
+                            .frame(width: 44, height: 44)
+                            .background(Color.mdSurface)
+                            .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(padDialerAction.accessibilityLabel)
@@ -1271,10 +1177,7 @@ struct ModemDeckPageHeader: View {
         }
         .padding(.horizontal, ModemDeckLayout.pageHorizontalPadding)
         .frame(minHeight: ModemDeckLayout.pageHeaderHeight)
-        .background(Color.mdSurface)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.mdBorder).frame(height: 1)
-        }
+        .background(Color.mdBackground)
     }
 }
 
@@ -1282,6 +1185,7 @@ struct ModemDeckSearchField: View {
     @Binding var text: String
     let prompt: String
     let clearAccessibilityText: String
+    var focus: FocusState<Bool>.Binding? = nil
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -1293,7 +1197,7 @@ struct ModemDeckSearchField: View {
                 .font(.subheadline)
                 .foregroundColor(.mdText)
                 .disableAutocorrection(true)
-                .focused($focused)
+                .focused(focus ?? $focused)
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -1309,7 +1213,124 @@ struct ModemDeckSearchField: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .frame(minHeight: ModemDeckLayout.controlHitSize)
         .contentShape(Rectangle())
-        .onTapGesture { focused = true }
+        .onTapGesture { (focus ?? $focused).wrappedValue = true }
+    }
+}
+
+/// Search replaces the title row instead of adding another permanent toolbar.
+/// The page keeps its query and filters when a retained tab is revisited.
+struct ModemDeckCollectionHeader<Actions: View>: View {
+    @ObservedObject var controller: ModemDeckSessionController
+    let title: String
+    @Binding var query: String
+    var backAction: (() -> Void)? = nil
+    var backAccessibilityText = ""
+    @ViewBuilder var actions: () -> Actions
+    @Environment(\.modemDeckPadDialerAction) private var dialerAction
+    @State private var searching = false
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if searching {
+                ModemDeckSearchField(text: $query, prompt: controller.text("搜索", "Search"),
+                    clearAccessibilityText: controller.text("清除搜索", "Clear search"), focus: $searchFocused)
+                Button(controller.text("取消", "Cancel")) {
+                    searchFocused = false
+                    query = ""
+                    searching = false
+                }
+                .font(.subheadline)
+                .foregroundColor(.mdAccent)
+                .frame(minWidth: 44, minHeight: 44)
+                .padding(.leading, 8)
+                .accessibilityIdentifier("collection-search-cancel")
+            } else {
+                if let backAction {
+                    ModemDeckCollectionHeaderButton(icon: "chevron.left", title: backAccessibilityText, action: backAction)
+                }
+                Text(title).font(.title2.weight(.bold)).foregroundColor(.mdText)
+                    .lineLimit(1).minimumScaleFactor(0.85)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 4)
+                ModemDeckCollectionHeaderButton(icon: "magnifyingglass", title: controller.text("搜索", "Search")) {
+                    searching = true
+                    searchFocused = true
+                }
+                .accessibilityIdentifier("collection-search-open")
+                actions()
+                if let dialerAction {
+                    ModemDeckCollectionHeaderButton(icon: "phone", title: dialerAction.accessibilityLabel, action: dialerAction.open)
+                }
+            }
+        }
+        .padding(.horizontal, ModemDeckLayout.pageHorizontalPadding)
+        .frame(minHeight: ModemDeckLayout.collectionHeaderHeight)
+        .background(Color.mdBackground)
+        .onDisappear { searchFocused = false }
+        .onChange(of: controller.selectedSection) { _ in searchFocused = false }
+    }
+}
+
+struct ModemDeckCollectionHeaderButton: View {
+    let icon: String
+    let title: String
+    var disabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.body.weight(.medium))
+                .foregroundColor(.mdAccent)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(disabled)
+        .accessibilityLabel(title)
+    }
+}
+
+struct ModemDeckCollectionFilters<Extra: View>: View {
+    @ObservedObject var controller: ModemDeckSessionController
+    @Binding var line: String
+    @Binding var favoriteOnly: Bool
+    var extraCount = 0
+    var clearExtra: () -> Void = {}
+    @ViewBuilder var extra: () -> Extra
+
+    private var count: Int { (line.isEmpty ? 0 : 1) + (favoriteOnly ? 1 : 0) + extraCount }
+
+    var body: some View {
+        Menu {
+            Picker(controller.text("线路", "Line"), selection: $line) {
+                Text(controller.text("全部线路", "All lines")).tag("")
+                ForEach(controller.bootstrap?.lineCatalog ?? []) { item in
+                    Text(item.displayName).tag(item.id)
+                }
+            }
+            Toggle(controller.text("仅收藏", "Favorites only"), isOn: $favoriteOnly)
+            extra()
+            if count > 0 {
+                Button(controller.text("清除筛选", "Clear filters")) {
+                    line = ""
+                    favoriteOnly = false
+                    clearExtra()
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "line.3.horizontal.decrease").font(.body.weight(.medium))
+                if count > 0 { Text("\(count)").font(.caption.weight(.bold)) }
+            }
+            .foregroundColor(count > 0 ? .mdAccent : .mdMuted)
+            .frame(width: 44, height: 44)
+            .background(count > 0 ? Color.mdAccentSoft : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("collection-filters")
+        .accessibilityLabel(controller.text("筛选", "Filters"))
+        .accessibilityValue(count > 0 ? controller.text("\(count) 项筛选", "\(count) filters") : controller.text("未筛选", "No filters"))
+        .accessibilityAddTraits(count > 0 ? .isSelected : [])
     }
 }
 
@@ -1356,6 +1377,7 @@ struct ModemDeckSegmentOption: Identifiable {
 struct ModemDeckSegmentPicker: View {
     let options: [ModemDeckSegmentOption]
     @Binding var selection: String
+    var compact = false
 
     var body: some View {
         HStack(spacing: 2) {
@@ -1364,26 +1386,31 @@ struct ModemDeckSegmentPicker: View {
                     selection = option.id
                 } label: {
                     ZStack {
-                        if selection == option.id {
+                        if selection == option.id && !compact {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(Color.mdSurface)
                                 .padding(.vertical, 4)
                         }
                         Text(option.title)
-                            .font(.caption.weight(selection == option.id ? .semibold : .medium))
-                            .foregroundColor(selection == option.id ? .mdText : .mdMuted)
+                            .font((compact ? Font.subheadline : .caption).weight(selection == option.id ? .semibold : .medium))
+                            .foregroundColor(selection == option.id ? (compact ? .mdAccent : .mdText) : .mdMuted)
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                     }
                     .frame(maxWidth: .infinity, minHeight: ModemDeckLayout.controlHitSize)
                     .contentShape(Rectangle())
+                    .overlay(alignment: .bottom) {
+                        if compact && selection == option.id {
+                            Capsule().fill(Color.mdAccent).frame(height: 2).padding(.horizontal, 12)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selection == option.id ? .isSelected : [])
             }
         }
         .frame(height: ModemDeckLayout.controlHitSize)
-        .background(Color.mdSurfaceHover)
+        .background(compact ? Color.clear : Color.mdSurfaceHover)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
@@ -1392,21 +1419,13 @@ extension View {
     func modemDeckListToolbar(showsDivider: Bool = false) -> some View {
         padding(.horizontal, ModemDeckLayout.toolbarHorizontalPadding)
             .padding(.vertical, ModemDeckLayout.toolbarVerticalPadding)
-            .background(Color.mdSurfaceSubtle)
-            .overlay(alignment: .bottom) {
-                if showsDivider {
-                    Rectangle().fill(Color.mdBorder).frame(height: 1)
-                }
-            }
+            .background(Color.mdBackground)
     }
 
     func modemDeckListFilterBar() -> some View {
         padding(.horizontal, ModemDeckLayout.toolbarHorizontalPadding)
             .padding(.bottom, ModemDeckLayout.toolbarVerticalPadding)
-            .background(Color.mdSurfaceSubtle)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Color.mdBorder).frame(height: 1)
-            }
+            .background(Color.mdBackground)
     }
 }
 
@@ -1431,7 +1450,7 @@ struct ModemDeckLineTag: View {
 }
 
 struct ModemDeckListDivider: View {
-    var leading: CGFloat = 72
+    var leading: CGFloat = ModemDeckLayout.listTextLeading
 
     var body: some View {
         Rectangle()
@@ -1448,7 +1467,59 @@ struct ModemDeckSelectionMark: View {
         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
             .font(.system(size: 20, weight: .medium))
             .foregroundColor(selected ? .mdAccent : .mdFaint)
-            .frame(width: 24)
+            .frame(width: ModemDeckLayout.listSelectionMarkWidth)
+    }
+}
+
+/// Long press is the primary selection gesture; this menu also supports switch control and keyboard users.
+struct ModemDeckCollectionMenu<Actions: View>: View {
+    @ObservedObject var controller: ModemDeckSessionController
+    @Binding var selecting: Bool
+    let busy: Bool
+    let selectTitle: String
+    let clearSelection: () -> Void
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        Menu {
+            Button {
+                selecting.toggle()
+                clearSelection()
+            } label: {
+                Label(selecting ? controller.text("完成", "Done") : selectTitle, systemImage: selecting ? "checkmark" : "checklist")
+            }
+            actions()
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundColor(.mdAccent)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .disabled(busy)
+        .accessibilityLabel(controller.text("更多操作", "More actions"))
+    }
+}
+
+struct ModemDeckBatchCopyMenu: View {
+    @ObservedObject var controller: ModemDeckSessionController
+    let items: [ModemDeckCopyItem]
+    var body: some View {
+        Menu {
+            ForEach(items.filter { !$0.value.isEmpty }) { item in
+                Button(item.label) { UIPasteboard.general.string = item.value }
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: "doc.on.doc").font(.body.weight(.semibold))
+                Text(controller.text("复制", "Copy")).font(.caption.weight(.semibold))
+            }
+            .foregroundColor(.mdText)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(Color.mdSurfaceHover)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .accessibilityLabel(controller.text("复制", "Copy"))
     }
 }
 

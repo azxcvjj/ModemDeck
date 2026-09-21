@@ -467,6 +467,12 @@ function unreadSummary() {
 }
 
 let contactDeleteDelayMS = 0
+let messageReadDelayMS = 0
+let messageReadsStarted = 0
+let messageReadsCompleted = 0
+let historyDelayMS = 0
+let historyReadsStarted = 0
+let historyReadsCompleted = 0
 
 async function fixtureWrite(request, response, pathname) {
   const body = await readJSON(request)
@@ -476,9 +482,28 @@ async function fixtureWrite(request, response, pathname) {
     }
     online = true
     contactDeleteDelayMS = 0
+    messageReadDelayMS = 0
+    messageReadsStarted = 0
+    messageReadsCompleted = 0
+    historyDelayMS = 0
+    historyReadsStarted = 0
+    historyReadsCompleted = 0
     operations.length = 0
   } else if (pathname === '/__uat/configure') {
     contactDeleteDelayMS = Math.max(0, Math.min(8000, Number(body.contactDeleteDelayMS) || 0))
+    messageReadDelayMS = Math.max(0, Math.min(8000, Number(body.messageReadDelayMS) || 0))
+    historyDelayMS = Math.max(0, Math.min(30000, Number(body.historyDelayMS) || 0))
+    if (body.largeHistory) {
+      for (let index = 0; index < 3000; index++) {
+        calls.push({ ...initial.calls[0], id: `uat-history-${index}`,
+          started_at: new Date(Date.UTC(2026, 7, 8 - index % 900, 7, index % 60)).toISOString() })
+      }
+    }
+    if (body.messagesRead) applyState(threads, () => true, 'read')
+    if (Number.isInteger(body.firstUnreadMessageID) && body.firstUnreadMessageID >= 1 && body.firstUnreadMessageID <= 30) {
+      threads[0].first_unread_message_id = body.firstUnreadMessageID
+      threads[0].unread_count = messages.filter(message => message.id >= body.firstUnreadMessageID && message.type === 1).length
+    }
     if (body.secondContact) {
       const extra = structuredClone(initial.contacts[0])
       extra.id = 'uat-contact-second'
@@ -533,7 +558,7 @@ const server = https.createServer(
     if (!authorize(request, response)) {
       status = 401
     } else if (mutable && url.pathname === '/__uat/state' && request.method === 'GET') {
-      send(response, 200, { online, contacts, threads, calls, recordings, operations })
+      send(response, 200, { online, contacts, threads, calls, recordings, operations, messageReadsStarted, messageReadsCompleted, historyReadsStarted, historyReadsCompleted })
     } else if (mutable && url.pathname.startsWith('/__uat/') && request.method === 'POST') {
       try { await fixtureWrite(request, response, url.pathname) } catch { send(response, 400, { code: 'invalid_fixture_request' }) }
     } else if (!online) {
@@ -556,6 +581,16 @@ const server = https.createServer(
         activeStreams.delete(timer)
       })
     } else if (request.method === 'GET') {
+      if (['/api/v1/calls', '/api/v1/recordings'].includes(url.pathname)) {
+        historyReadsStarted += 1
+        if (historyDelayMS) await new Promise(resolve => setTimeout(resolve, historyDelayMS))
+        historyReadsCompleted += 1
+      }
+      if (url.pathname === '/api/v1/messages') {
+        messageReadsStarted += 1
+        if (messageReadDelayMS) await new Promise(resolve => setTimeout(resolve, messageReadDelayMS))
+        messageReadsCompleted += 1
+      }
       const body = readOnlyBody(url.pathname)
       if (body !== undefined) {
         send(response, 200, body)
