@@ -133,7 +133,7 @@ ARG VCS_REF=unknown
 ARG MODEMDECK_UID=10001
 ARG MODEMDECK_GID=10001
 
-RUN apk add --no-cache ca-certificates=20260611-r0 \
+RUN apk add --no-cache ca-certificates=20260909-r0 \
     && addgroup -S -g "${MODEMDECK_GID}" modemdeck \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin \
         -u "${MODEMDECK_UID}" -G modemdeck modemdeck \
