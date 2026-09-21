@@ -1621,7 +1621,14 @@ func upsertHardwareCall(
 			}
 		}
 	}
-	if stored.Missed && (stored.Phase == "ended" || stored.Phase == "failed") {
+	wasOpen := !newlyDiscovered && strings.TrimSpace(existingEndedAt.String) == "" &&
+		existingPhase != "ended" && existingPhase != "failed"
+	becameTerminal := wasOpen && (stored.Phase == "ended" || stored.Phase == "failed")
+	// A notification belongs to the first terminal observation, not every
+	// snapshot that still contains this call. Replays may have a new timestamp
+	// or enriched caller metadata; neither should recreate an immutable event.
+	if stored.Missed && (newlyDiscovered || becameTerminal) &&
+		(stored.Phase == "ended" || stored.Phase == "failed") {
 		if err := enqueueNotification(
 			ctx,
 			transaction,
@@ -1636,9 +1643,6 @@ func upsertHardwareCall(
 			return Call{}, false, false, err
 		}
 	}
-	wasOpen := !newlyDiscovered && strings.TrimSpace(existingEndedAt.String) == "" &&
-		existingPhase != "ended" && existingPhase != "failed"
-	becameTerminal := wasOpen && (stored.Phase == "ended" || stored.Phase == "failed")
 	return stored, newlyDiscovered, becameTerminal, nil
 }
 

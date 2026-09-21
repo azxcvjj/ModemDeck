@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -2075,4 +2076,72 @@ func stableLineIDForICCID(t *testing.T, repository *Store, iccid string) string 
 		t.Fatalf("stable line ID for ICCID %q is empty", iccid)
 	}
 	return lineID
+}
+
+func TestMissedCallSnapshotReplayPreservesNotification(t *testing.T) {
+	t.Parallel()
+	for _, ending := range []string{"ended", "failed", "missing", "discovered"} {
+		t.Run(ending, func(t *testing.T) {
+			repository := newHardwareTestStore(t)
+			ctx := context.Background()
+			now := time.Date(2026, time.September, 10, 7, 26, 0, 0, time.UTC)
+			line := policyTestLine()
+			call := HardwareCall{AppID: "missed-replay", LineID: line.ID, EndpointLineID: line.ID,
+				EndpointCallID: "endpoint-missed-replay", Number: "+12025550107", Direction: "incoming",
+				Phase: "ringing", ObservedAt: now}
+			apply := func(revision string, at time.Time, calls []HardwareCall) HardwareSnapshotResult {
+				t.Helper()
+				result, err := repository.ApplyHardwareSnapshotWithResult(ctx, HardwareSnapshot{
+					BootEpoch: "missed-replay", Revision: revision, ObservedAt: at,
+					Lines: []HardwareLine{line}, Calls: calls,
+				})
+				if err != nil {
+					t.Fatalf("apply %s: %v", revision, err)
+				}
+				return result
+			}
+			if ending != "discovered" {
+				apply("ringing", now, []HardwareCall{call})
+			}
+			call.Phase = "ended"
+			if ending == "failed" {
+				call.Phase = "failed"
+			}
+			call.ObservedAt = now.Add(time.Minute)
+			if ending == "missing" {
+				apply("terminal", call.ObservedAt, nil)
+			} else {
+				apply("terminal", call.ObservedAt, []HardwareCall{call})
+			}
+			var originalTime string
+			if err := repository.database.QueryRowContext(ctx,
+				"SELECT occurred_at FROM modemdeck_notification_events WHERE event_key = ?", "call:"+call.AppID).Scan(&originalTime); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				call.ObservedAt = now.Add(time.Duration(i+2) * time.Hour)
+				result := apply(fmt.Sprintf("replay-%d", i), call.ObservedAt, []HardwareCall{call})
+				if len(result.TerminalCalls) != 0 {
+					t.Fatalf("replay emitted terminal calls: %+v", result.TerminalCalls)
+				}
+				var count int
+				var occurredAt string
+				if err := repository.database.QueryRowContext(ctx,
+					"SELECT COUNT(*), MIN(occurred_at) FROM modemdeck_notification_events WHERE event_key = ?", "call:"+call.AppID).Scan(&count, &occurredAt); err != nil {
+					t.Fatal(err)
+				}
+				if count != 1 || occurredAt != originalTime {
+					t.Fatalf("notification changed: count=%d timestamp=%s, want %s", count, occurredAt, originalTime)
+				}
+				var syncedAt string
+				if err := repository.database.QueryRowContext(ctx,
+					"SELECT observed_at FROM modemdeck_hardware_sync WHERE singleton = 1").Scan(&syncedAt); err != nil {
+					t.Fatal(err)
+				}
+				if syncedAt != databaseTime(call.ObservedAt) {
+					t.Fatalf("snapshot did not advance: %s", syncedAt)
+				}
+			}
+		})
+	}
 }
