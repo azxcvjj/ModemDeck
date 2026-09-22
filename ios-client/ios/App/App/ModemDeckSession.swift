@@ -83,7 +83,10 @@ final class ModemDeckSessionController: ObservableObject {
                       self.phase == .paired,
                       let reachable = notification.userInfo?["reachable"] as? Bool else { return }
                 if reachable {
-                    if self.connectionState == .offline { self.recovery.connectionMayBeAvailable() }
+                    if self.connectionState == .offline {
+                        self.recovery.connectionMayBeAvailable()
+                        ModemDeckPushCoordinator.shared.connectionMayBeAvailable()
+                    }
                 } else {
                     self.transportFailureRevision += 1
                     self.connectionState = .offline
@@ -98,6 +101,7 @@ final class ModemDeckSessionController: ObservableObject {
                 guard self.phase == .paired else { return }
                 if available {
                     self.recovery.connectionMayBeAvailable()
+                    ModemDeckPushCoordinator.shared.connectionMayBeAvailable()
                 } else {
                     self.transportFailureRevision += 1
                     self.connectionState = .offline
@@ -454,6 +458,7 @@ final class ModemDeckCallController: NSObject, ObservableObject, ModemDeckCallSt
 
     @Published private(set) var call: ModemDeckPresentedCall?
     @Published private(set) var busy = false
+    @Published private(set) var ending = false
     @Published private(set) var muteBusy = false
     @Published private(set) var recordingEnabled = false
     @Published private(set) var recordingStatus = "off"
@@ -531,6 +536,7 @@ final class ModemDeckCallController: NSObject, ObservableObject, ModemDeckCallSt
                     message: "Microphone access is required before placing a call."
                 )
             }
+            try ModemDeckPushCoordinator.shared.validateOutgoingCallStart()
             let callSession = try await api.startCall(
                 lineID: lineID,
                 number: number,
@@ -576,9 +582,19 @@ final class ModemDeckCallController: NSObject, ObservableObject, ModemDeckCallSt
     }
 
     func end() async {
-        guard let call else { return }
-        await perform { completion in
-            ModemDeckPushCoordinator.shared.endCall(callID: call.callID, completion: completion)
+        guard let call, !ending else { return }
+        let callID = call.callID
+        ending = true
+        errorMessage = ""
+        defer { if self.call?.callID == callID { ending = false } }
+        do {
+            try await withCheckedThrowingContinuation { continuation in
+                ModemDeckPushCoordinator.shared.endCall(callID: callID) { result in
+                    continuation.resume(with: result)
+                }
+            }
+        } catch {
+            if self.call?.callID == callID { errorMessage = error.localizedDescription }
         }
     }
 
@@ -651,16 +667,17 @@ final class ModemDeckCallController: NSObject, ObservableObject, ModemDeckCallSt
     private func perform(
         _ operation: (@escaping (Result<Void, Error>) -> Void) -> Void
     ) async {
-        guard !busy else { return }
+        guard !busy, !ending else { return }
+        let callID = call?.callID
         busy = true
         errorMessage = ""
-        defer { busy = false }
+        defer { if call?.callID == callID { busy = false } }
         do {
             try await withCheckedThrowingContinuation { continuation in
                 operation { result in continuation.resume(with: result) }
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if call?.callID == callID { errorMessage = error.localizedDescription }
         }
     }
 
@@ -782,6 +799,7 @@ final class ModemDeckCallController: NSObject, ObservableObject, ModemDeckCallSt
         recordingGeneration += 1
         call = nil
         busy = false
+        ending = false
         muteBusy = false
         recordingEnabled = false
         recordingStatus = "off"

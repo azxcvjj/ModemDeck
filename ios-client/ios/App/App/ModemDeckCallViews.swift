@@ -2056,7 +2056,7 @@ struct ModemDeckMiniCallBar: View {
                     .background(Color(red: 0.78, green: 0.18, blue: 0.24))
                     .clipShape(Circle())
             }
-            .disabled(!canEnd || callController.busy)
+            .disabled(!canEnd || callController.ending)
             .accessibilityLabel(controller.text("挂断", "End call"))
             .padding(.trailing, 8)
         }
@@ -2267,7 +2267,7 @@ struct ModemDeckActiveCallView: View {
                     icon: "phone.down.fill",
                     color: .red,
                     primary: true,
-                    disabled: callController.busy || !canReject
+                    disabled: callController.ending || !canReject
                 ) {
                     Task { await callController.end() }
                 }
@@ -2276,7 +2276,7 @@ struct ModemDeckActiveCallView: View {
                     icon: "phone.fill",
                     color: .green,
                     primary: true,
-                    disabled: callController.busy || !canAnswer
+                    disabled: callController.busy || callController.ending || !canAnswer
                 ) {
                     Task { await callController.answer() }
                 }
@@ -2286,7 +2286,7 @@ struct ModemDeckActiveCallView: View {
                     icon: "phone.down.fill",
                     color: .red,
                     primary: true,
-                    disabled: callController.busy || !canHangup
+                    disabled: callController.ending || !canHangup
                 ) {
                     Task { await callController.end() }
                 }

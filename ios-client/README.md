@@ -48,6 +48,10 @@ call audio remain native platform services.
   reject/hang-up, mute, and DTMF, while an audio-only WebRTC peer carries sound
   through the existing call media and lease APIs. The in-app native call surface
   also exposes mute, keypad, recording, and hang-up after CallKit is hidden.
+- Ends the local call immediately while retaining unconfirmed server hang-up
+  requests across network interruptions and app restarts. Recovery checks the
+  original call's state and credential scope before retrying; bearer tokens
+  are never stored in the pending-request journal.
 - Presents server-originated synthetic test calls in CallKit and mirrors their
   live state in the in-app call surface. After answer, an audible local test
   tone verifies the CallKit output route without creating a modem call, call
@@ -60,11 +64,11 @@ call audio remain native platform services.
 ## Commands
 
 ```sh
-# Build the simulator application with Xcode Beta.
-npm run build:ios
+# Use the same installed Xcode for builds, tests, and simulator tools.
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
-# Override the default Xcode Beta path when Xcode is installed elsewhere.
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer npm run build:ios
+# Build the simulator application.
+npm run build:ios
 
 # Rebuild, install, and launch on the preferred Pro Max simulator.
 npm run run:ios:iphone
@@ -124,7 +128,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -addext 'keyUsage=critical,keyCertSign,digitalSignature,keyEncipherment' \
   -addext 'extendedKeyUsage=serverAuth'
 
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcrun simctl keychain booted add-root-cert \
   DerivedData/uat-mock/server-cert.pem
 
@@ -171,7 +175,7 @@ foreground refresh, edge-back navigation, and automatic recovery with cached
 history. No UI-test code or fixture credential is included in the app target.
 
 Use a disposable Pro Max or iPad Pro simulator running iOS 17 or later, as
-required by Xcode Beta's UI-test framework; the app's deployment target is
+required by Xcode's UI-test framework; the app's deployment target is
 unchanged. Generate the temporary TLS
 certificate as above and trust it on that simulator only, using its explicit
 UUID instead of `booted`. Start this opt-in fixture server in another terminal:
@@ -191,11 +195,11 @@ sequentially to avoid resetting another test's state.
 
 ```sh
 UAT_SIMULATOR_ID="DISPOSABLE_SIMULATOR_UUID"
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcrun simctl keychain "$UAT_SIMULATOR_ID" add-root-cert \
   DerivedData/uat-mock/server-cert.pem
 
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project ios/App/App.xcodeproj -scheme App-UAT \
   -configuration Debug -sdk iphonesimulator \
   -destination "id=$UAT_SIMULATOR_ID" -derivedDataPath DerivedData \

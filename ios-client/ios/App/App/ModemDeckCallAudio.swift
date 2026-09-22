@@ -28,7 +28,7 @@ enum ModemDeckCallAudioError: LocalizedError {
     }
 }
 
-private struct ModemDeckActiveCallsResponse: Decodable {
+struct ModemDeckActiveCallsResponse: Decodable {
     struct Call: Decodable {
         let id: String
         let phase: String
@@ -99,6 +99,7 @@ final class ModemDeckCallAudioSession: NSObject {
     private let urlSession: URLSession
     private var peerConnection: RTCPeerConnection?
     private var localAudioTrack: RTCAudioTrack?
+    private var muted = false
     private var connectCompletion: ConnectionCompletion?
     private var connectDeadline = Date.distantPast
     private var activePollAttempt = 0
@@ -108,6 +109,7 @@ final class ModemDeckCallAudioSession: NSObject {
     private var connecting = false
     private var reportedActive = false
     private var leaseTimer: DispatchSourceTimer?
+    private var leaseRequestInFlight = false
     private var connectTimeout: DispatchWorkItem?
     private var disconnectTimeout: DispatchWorkItem?
 
@@ -179,31 +181,39 @@ final class ModemDeckCallAudioSession: NSObject {
         }
     }
 
-    func didActivate(_ audioSession: AVAudioSession) {
-        queue.async {
-            let rtcSession = RTCAudioSession.sharedInstance()
-            rtcSession.audioSessionDidActivate(audioSession)
-            rtcSession.isAudioEnabled = true
-        }
+    static func didActivate(_ audioSession: AVAudioSession) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let rtcSession = RTCAudioSession.sharedInstance()
+        rtcSession.audioSessionDidActivate(audioSession)
+        rtcSession.isAudioEnabled = true
     }
 
-    func didDeactivate(_ audioSession: AVAudioSession) {
-        queue.async {
-            let rtcSession = RTCAudioSession.sharedInstance()
-            rtcSession.isAudioEnabled = false
-            rtcSession.audioSessionDidDeactivate(audioSession)
-        }
+    static func didDeactivate(_ audioSession: AVAudioSession) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let rtcSession = RTCAudioSession.sharedInstance()
+        rtcSession.isAudioEnabled = false
+        rtcSession.audioSessionDidDeactivate(audioSession)
     }
 
     func setMuted(_ muted: Bool) {
         queue.async { [weak self] in
-            self?.localAudioTrack?.isEnabled = !muted
+            guard let self, !self.stopped else { return }
+            self.muted = muted
+            self.localAudioTrack?.isEnabled = !muted
         }
     }
 
     func stop() {
+        // cleanupCall removes the last owner before this work can execute.
+        queue.async {
+            self.stopLocked(notifyRemoteEnd: false)
+        }
+    }
+
+    func startControlHeartbeat() {
         queue.async { [weak self] in
-            self?.stopLocked(notifyRemoteEnd: false)
+            guard let self, !self.stopped else { return }
+            self.startLeaseHeartbeat()
         }
     }
 
@@ -321,7 +331,7 @@ final class ModemDeckCallAudioSession: NSObject {
             with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         )
         let track = Self.factory.audioTrack(with: source, trackId: "modemdeck-audio")
-        localAudioTrack = track
+        installLocalAudioTrack(track)
         peer.add(track, streamIds: ["modemdeck-call"])
 
         let offerConstraints = RTCMediaConstraints(
@@ -400,13 +410,21 @@ final class ModemDeckCallAudioSession: NSObject {
         }
     }
 
+    private func installLocalAudioTrack(_ track: RTCAudioTrack) {
+        track.isEnabled = !muted
+        localAudioTrack = track
+    }
+
     private func startLeaseHeartbeat() {
         guard leaseTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .milliseconds(250))
         timer.setEventHandler { [weak self] in
-            guard let self, !self.stopped else { return }
-            self.request(path: self.callPath("lease"), method: "PUT", json: [:]) { result in
+            guard let self, !self.stopped, !self.leaseRequestInFlight else { return }
+            self.leaseRequestInFlight = true
+            self.request(path: self.callPath("lease"), method: "PUT", json: [:]) { [weak self] result in
+                guard let self, !self.stopped else { return }
+                self.leaseRequestInFlight = false
                 if case .failure(let error) = result {
                     NSLog("ModemDeck call lease renewal failed: %@", error.localizedDescription)
                 }
@@ -439,10 +457,12 @@ final class ModemDeckCallAudioSession: NSObject {
         connectTimeout = nil
         disconnectTimeout?.cancel()
         disconnectTimeout = nil
+        localAudioTrack?.isEnabled = false
         peerConnection?.close()
         peerConnection = nil
         localAudioTrack = nil
-        RTCAudioSession.sharedInstance().isAudioEnabled = false
+        // CallKit's activation callbacks exclusively own the shared audio unit.
+        // An older session's queued stop must never disable a newer call.
         urlSession.invalidateAndCancel()
         if mediaClaimed {
             releaseMedia()

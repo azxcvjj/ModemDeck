@@ -119,7 +119,7 @@ test('CallKit owns native WebRTC audio and keeps synthetic calls local', async (
   assert.match(audio, /callPath\("media"\)/)
   assert.match(audio, /callPath\("lease"\)/)
   assert.match(native, /audioSession\.connect/)
-  assert.match(native, /sendCallAction\(verb: "hangup"/)
+  assert.match(native, /sendEndCallAction\(verb: "hangup"/)
   assert.match(native, /sendCallAction\([\s\S]*verb: "dtmf"/)
   assert.match(native, /CXStartCallAction/)
   assert.match(native, /reportOutgoingCall/)
@@ -815,17 +815,17 @@ test('CallKit foreground reconciliation opens the native active-call surface', a
   assert.match(app, /if let call = callController\.call[\s\S]*ModemDeckActiveCallView/)
   assert.match(app, /UIApplication\.didBecomeActiveNotification[\s\S]*callController\.refreshFromCallKit\(\)/)
   assert.match(session, /func refreshFromCallKit\(\)[\s\S]*currentCallState/)
-  assert.match(native, /answerRequestedCallUUIDs\.insert\(uuid\)\n\s*publishCallState\(\)/)
+  assert.match(native, /answerRequestedCallUUIDs\.insert\(uuid\)[\s\S]*publishCallState\(\)/)
   assert.match(native, /state = "connecting"/)
 })
 
-test('native call reconciliation consumes only newer state for the exact call', async () => {
+test('native call reconciliation scopes snapshots to the current call stream', async () => {
   const native = await source('ios/App/App/ModemDeckNative.swift')
 
   assert.match(native, /guard eventName == "call_state"/)
   assert.match(native, /runtime\/events\?call_id=\\\(encodedCallID\)/)
-  assert.match(native, /guard state\.id == callID,[\s\S]*state\.revision > self\.runtimeCallRevision/)
-  assert.doesNotMatch(native, /state\.revision >= self\.runtimeCallRevision/)
+  assert.match(native, /acceptRuntimeCallState\(state, callID: callID, generation: generation\)/)
+  assert.match(native, /guard generation == runtimeCallGeneration,[\s\S]*state\.id == callID, state\.revision >= runtimeCallRevision/)
 })
 
 test('unresolved native writes retain one operation identity across ambiguous responses', async () => {

@@ -16,7 +16,7 @@ test('foreground recovery executes automatic retries, coalescing and cancellatio
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'modemdeck-recovery-test-'))
   try {
     const executable = path.join(temporary, 'recovery-tests')
-    const env = { ...process.env, DEVELOPER_DIR: process.env.DEVELOPER_DIR || '/Applications/Xcode-beta.app/Contents/Developer' }
+    const env = { ...process.env, DEVELOPER_DIR: process.env.DEVELOPER_DIR || '/Applications/Xcode.app/Contents/Developer' }
     await run('xcrun', ['swiftc', '-swift-version', '6', '-parse-as-library',
       path.join(root, 'ios/App/App/ModemDeckConnectionRecovery.swift'),
       path.join(root, 'tests/connection-recovery.swift'), '-o', executable

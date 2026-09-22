@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const iosRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const developerDirectory = process.env.DEVELOPER_DIR || '/Applications/Xcode-beta.app/Contents/Developer'
+const developerDirectory = process.env.DEVELOPER_DIR || '/Applications/Xcode.app/Contents/Developer'
 const simulatorApplications = [
   path.join(
     path.dirname(developerDirectory),
